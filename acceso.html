@@ -457,7 +457,7 @@ window.__iniciarPlan=function(){
 #candado .caja{background:var(--blanco);border:1px solid var(--linea);border-radius:12px;padding:28px 30px;max-width:460px;width:100%;text-align:left}
 #candado h2{margin:0 0 8px;font-size:20px;font-weight:900;color:var(--azul)}
 #candado p{margin:0 0 8px;font-size:14px;color:var(--t2);line-height:1.45}
-#candado input[type=email],#candado input[type=text]{width:100%;box-sizing:border-box;margin:8px 0 2px;padding:10px 12px;font-size:15px;border:1px solid var(--linea);border-radius:8px;font-family:inherit}
+#candado input[type=email],#candado input[type=text],#candado input[type=password]{width:100%;box-sizing:border-box;margin:8px 0 2px;padding:10px 12px;font-size:15px;border:1px solid var(--linea);border-radius:8px;font-family:inherit}
 #candado button,#adm button{border:0;background:var(--azul);color:var(--marfil);font-weight:700;padding:9px 18px;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px}
 #candado button{margin-top:12px}
 #candado button.sec,#adm button.sec{background:transparent;color:var(--azul);border:1px solid var(--azul)}
@@ -498,7 +498,7 @@ window.__iniciarPlan=function(){
 <div id="adm" hidden></div>
 <script type="module">
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import {getAuth,isSignInWithEmailLink,sendSignInLinkToEmail,signInWithEmailLink,onAuthStateChanged,signOut} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import {getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,onAuthStateChanged,signOut} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import {getFirestore,doc,getDoc,setDoc,updateDoc,deleteDoc,collection,getDocs,query,orderBy,where,limit,serverTimestamp,increment,writeBatch,Timestamp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
 const CFG={apiKey:"AIzaSyDjJiRQBZ0h8y8a-SEWSZARMY2yrqqe444",authDomain:"acceso-plan-cecinas.firebaseapp.com",projectId:"acceso-plan-cecinas",storageBucket:"acceso-plan-cecinas.firebasestorage.app",messagingSenderId:"367624171571",appId:"1:367624171571:web:cd96e8c2984f8bded43346"};
@@ -507,52 +507,46 @@ const app=initializeApp(CFG), auth=getAuth(app), db=getFirestore(app);
 const $=i=>document.getElementById(i);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const candado=$('candado');
-let enlaceEnCurso=false;
 const LS={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
 const fh=t=>t&&t.toDate?t.toDate().toLocaleString('es-CL',{timeZone:'America/Santiago',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
 let sesion={u:null,email:'',esAdmin:false,perfil:null,llave:null,sid:null,datos:null,timer:null,latido:null};
 
 function pantalla(html){candado.innerHTML='<div class="caja">'+html+'</div>';candado.hidden=false;}
 function vistaCargando(t){pantalla('<h2>Plan de visitas Cecinas</h2><p>'+esc(t||'Cargando…')+'</p>');}
-function vistaLogin(msg,esErr,mailPrev){
-  pantalla('<h2>Plan de visitas Cecinas</h2><p>Acceso restringido. Ingresa tu correo y te enviaremos un enlace para entrar.</p>'+
-   '<input id="lg-mail" type="email" placeholder="nombre@agrosuper.com" autocomplete="email" value="'+esc(mailPrev||LS.get('pc_email')||'')+'">'+
-   '<button id="lg-ok" type="button">Enviar enlace de acceso</button>'+(msg?'<p class="'+(esErr?'err':'')+'" style="margin-top:12px">'+msg+'</p>':''));
+function errAuth(e){
+  const c=e&&e.code;
+  if(c==='auth/invalid-credential'||c==='auth/wrong-password'||c==='auth/user-not-found'||c==='auth/invalid-login-credentials')return 'Correo o contraseña incorrectos. Si aún no tienes cuenta, usa «Crear cuenta».';
+  if(c==='auth/email-already-in-use')return 'Ese correo ya tiene una cuenta. Usa «Entrar». Si olvidaste tu contraseña, pide al administrador que la restablezca.';
+  if(c==='auth/weak-password')return 'La contraseña debe tener al menos 8 caracteres.';
+  if(c==='auth/invalid-email')return 'El correo no es válido.';
+  if(c==='auth/too-many-requests')return 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo.';
+  if(c==='auth/network-request-failed')return 'Sin conexión. Revisa tu internet.';
+  return 'No se pudo completar. Inténtalo de nuevo.';
+}
+function vistaLogin(modo,msg,mailPrev){
+  modo=modo||'entrar';
+  const reg=(modo==='crear');
+  pantalla('<h2>Plan de visitas Cecinas</h2><p>'+(reg?'Crea tu cuenta con tu correo corporativo. Después deberás ser autorizado por el administrador.':'Acceso restringido. Entra con tu correo y contraseña.')+'</p>'+
+   '<input id="lg-mail" type="email" placeholder="nombre@agrosuper.com" autocomplete="username" value="'+esc(mailPrev||LS.get('pc_email')||'')+'">'+
+   '<input id="lg-pw" type="password" placeholder="Contraseña'+(reg?' (mínimo 8 caracteres)':'')+'" autocomplete="'+(reg?'new-password':'current-password')+'">'+
+   (reg?'<input id="lg-pw2" type="password" placeholder="Repite la contraseña" autocomplete="new-password">':'')+
+   '<button id="lg-ok" type="button">'+(reg?'Crear cuenta':'Entrar')+'</button> <button id="lg-alt" class="sec" type="button">'+(reg?'Ya tengo cuenta':'Crear cuenta')+'</button>'+
+   (msg?'<p class="err" style="margin-top:12px">'+msg+'</p>':'')+
+   (reg?'':'<p style="margin-top:12px;font-size:12px">¿Olvidaste tu contraseña? Pide al administrador que la restablezca.</p>'));
   const go=async()=>{
-    const m=$('lg-mail').value.trim().toLowerCase();
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m)){vistaLogin('Escribe un correo válido.',true,m);return;}
-    $('lg-ok').disabled=true;$('lg-ok').textContent='Enviando…';
+    const m=$('lg-mail').value.trim().toLowerCase(), pw=$('lg-pw').value;
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m)){vistaLogin(modo,'Escribe un correo válido.',m);return;}
+    if(pw.length<8){vistaLogin(modo,'La contraseña debe tener al menos 8 caracteres.',m);return;}
+    if(reg&&pw!==$('lg-pw2').value){vistaLogin(modo,'Las contraseñas no coinciden.',m);return;}
+    $('lg-ok').disabled=true;$('lg-ok').textContent='Un momento…';
     try{
-      await sendSignInLinkToEmail(auth,m,{url:location.origin+location.pathname,handleCodeInApp:true});
+      if(reg)await createUserWithEmailAndPassword(auth,m,pw);else await signInWithEmailAndPassword(auth,m,pw);
       LS.set('pc_email',m);
-      pantalla('<h2>Revisa tu correo</h2><p>Enviamos un enlace de acceso a <b>'+esc(m)+'</b>. Ábrelo <b>desde este mismo navegador</b>. Si no llega en un par de minutos, revisa la carpeta de spam o correo no deseado.</p><button id="lg-otra" class="sec" type="button">Usar otro correo / reenviar</button>');
-      $('lg-otra').onclick=()=>vistaLogin('',false,m);
-    }catch(e){
-      console.error(e);
-      let t='No se pudo enviar el enlace. Inténtalo de nuevo en unos minutos.';
-      if(e.code==='auth/unauthorized-continue-uri')t='Este sitio aún no está habilitado para enviar enlaces (dominio no autorizado).';
-      if(e.code==='auth/quota-exceeded')t='Se alcanzó el límite diario de envíos. Inténtalo más tarde.';
-      vistaLogin(t,true,m);
-    }
+    }catch(e){console.error(e);vistaLogin(modo,errAuth(e),m);}
   };
-  $('lg-ok').onclick=go;$('lg-mail').onkeydown=e=>{if(e.key==='Enter')go();};
-}
-function vistaConfirmarMail(){
-  pantalla('<h2>Confirma tu correo</h2><p>Para completar el acceso, escribe el correo al que llegó el enlace.</p><input id="cf-mail" type="email" placeholder="nombre@agrosuper.com"><button id="cf-ok" type="button">Entrar</button>');
-  $('cf-ok').onclick=()=>completarEnlace($('cf-mail').value.trim().toLowerCase());
-}
-async function completarEnlace(m){
-  enlaceEnCurso=true;
-  vistaCargando('Verificando enlace…');
-  let ok=false;
-  try{
-    await signInWithEmailLink(auth,m,location.href);
-    LS.set('pc_email',m);ok=true;
-  }catch(e){console.error(e);}
-  history.replaceState(null,'',location.pathname);
-  enlaceEnCurso=false;
-  if(ok&&auth.currentUser)iniciar(auth.currentUser);
-  else vistaLogin('El enlace no es válido o ya se usó. Pide uno nuevo.',true,m);
+  $('lg-ok').onclick=go;
+  $('lg-alt').onclick=()=>vistaLogin(reg?'entrar':'crear','',$('lg-mail').value.trim().toLowerCase());
+  ['lg-mail','lg-pw','lg-pw2'].forEach(id=>{const el=$(id);if(el)el.onkeydown=e=>{if(e.key==='Enter')go();};});
 }
 async function vistaSolicitud(email){
   let sol=null;try{const s=await getDoc(doc(db,'solicitudes',email));if(s.exists())sol=s.data();}catch(e){}
@@ -637,7 +631,6 @@ let plan_iniciado=false;
 async function iniciar(u){
   sesion.u=u;sesion.email=(u.email||'').toLowerCase();sesion.esAdmin=(sesion.email===ADMIN);
   vistaCargando('Validando acceso…');
-  if(!u.emailVerified){await signOut(auth);vistaLogin('Debes entrar con el enlace enviado a tu correo.',true);return;}
   if(sesion.esAdmin){sesion.perfil={nombre:'Administrador'};}
   else{
     let p=null;
@@ -779,7 +772,6 @@ async function tabLlave(){
 
 /* ---------- arranque ---------- */
 onAuthStateChanged(auth,u=>{
-  if(enlaceEnCurso)return;
   if(u){iniciar(u);return;}
   if(sesion.latido){clearInterval(sesion.latido);sesion.latido=null;}
   if(sesion.timer){clearInterval(sesion.timer);sesion.timer=null;}
@@ -787,11 +779,6 @@ onAuthStateChanged(auth,u=>{
   $('barra').hidden=true;$('marca').hidden=true;
   vistaLogin();
 });
-if(isSignInWithEmailLink(auth,location.href)){
-  enlaceEnCurso=true;
-  const m=LS.get('pc_email');
-  if(m)completarEnlace(m);else vistaConfirmarMail();
-}
 </script>
 </body>
 </html>
