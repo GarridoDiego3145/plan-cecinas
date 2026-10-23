@@ -490,6 +490,11 @@ window.__iniciarPlan=function(){
 #adm .mini{padding:4px 10px;font-size:12px;margin-right:4px}
 #adm .peligro{background:#b3261e}
 #adm .fila{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+#candado a{color:var(--azul);font-weight:700}
+#candado .nota-acc{font-size:12px;color:var(--t2);margin-top:14px;border-top:1px solid var(--linea);padding-top:10px}
+#adm .ok-msg{background:#e7f5ec;color:#1b5e20;padding:8px 12px;border-radius:8px;font-weight:700;margin:0 0 12px}
+#adm details{background:var(--marfil);border-radius:8px;padding:10px 12px}
+#adm code{background:var(--marfil);padding:1px 6px;border-radius:4px}
 </style>
 <div id="candado" role="status" aria-live="polite"><div class="caja"><h2>Plan de visitas Cecinas</h2><p>Cargando…</p></div></div>
 <div id="aviso" hidden><span>Hay datos más recientes</span><button type="button" onclick="location.reload()">Actualizar</button></div>
@@ -498,146 +503,155 @@ window.__iniciarPlan=function(){
 <div id="adm" hidden></div>
 <script type="module">
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import {getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,onAuthStateChanged,signOut,OAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,linkWithCredential} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import {getFirestore,doc,getDoc,setDoc,updateDoc,deleteDoc,collection,getDocs,query,orderBy,where,limit,serverTimestamp,increment,writeBatch,Timestamp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {getAuth,signInAnonymously,signInWithEmailAndPassword,onAuthStateChanged,signOut} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import {getFirestore,doc,getDoc,setDoc,updateDoc,deleteDoc,addDoc,collection,getDocs,query,orderBy,where,limit,serverTimestamp,increment,writeBatch,Timestamp,arrayUnion,onSnapshot} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
 const CFG={apiKey:"AIzaSyDjJiRQBZ0h8y8a-SEWSZARMY2yrqqe444",authDomain:"acceso-plan-cecinas.firebaseapp.com",projectId:"acceso-plan-cecinas",storageBucket:"acceso-plan-cecinas.firebasestorage.app",messagingSenderId:"367624171571",appId:"1:367624171571:web:cd96e8c2984f8bded43346"};
-const CODIGO_URL=(function(){try{const c=new URLSearchParams(location.search).get('c');if(c){history.replaceState(null,'',location.pathname);return c.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,16);}}catch(e){}return '';})();
-const TENANT='1259e2e7-e36c-4aa5-9256-ab0a2bd682bc', MS_ACTIVO=false;
-const URL_ACCESO='https://garridodiego3145.github.io/plan-cecinas/acceso.html', DIAS_CODIGO=30;
-const ADMIN='dgarridob@agrosuper.com', ARCHIVO='data/plan.enc', CADA_MIN=5, LATIDO_SEG=60;
+const ADMIN_UID='WhZWCuqFyCemGrUqnYcpo6iKLj13', ADMIN_MAIL='dgarridob@agrosuper.com';
+const ARCHIVO='data/plan.enc', CADA_MIN=5, LATIDO_SEG=60, DIAS_CLAVE=30, MAX_DISP=2, MAX_FALLOS=5, BLOQUEO_MIN=15;
+const DOM=/^[a-z0-9._%+-]+@agrosuper\.com$/;
+const ALFA='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin 0/O ni 1/I
 const app=initializeApp(CFG), auth=getAuth(app), db=getFirestore(app);
 const $=i=>document.getElementById(i);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const candado=$('candado');
 const LS={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
-const fh=t=>t&&t.toDate?t.toDate().toLocaleString('es-CL',{timeZone:'America/Santiago',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
-let sesion={u:null,email:'',esAdmin:false,perfil:null,llave:null,sid:null,datos:null,timer:null,latido:null};
+const TZ={timeZone:'America/Santiago'};
+const aFecha=t=>t&&t.toDate?t.toDate():(t instanceof Date?t:null);
+const fh=t=>{const d=aFecha(t);return d?d.toLocaleString('es-CL',{...TZ,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'—';};
+const fd=t=>{const d=aFecha(t);return d?d.toLocaleDateString('es-CL',{...TZ,day:'2-digit',month:'2-digit',year:'numeric'}):'—';};
+const limpiaMail=m=>String(m||'').trim().toLowerCase();
+const limpiaClave=c=>String(c||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+let sesion={modo:'',uid:'',email:'',nombre:'',d:'',exp:null,llave:null,datos:null,sid:null,latido:null,timer:null,unsub:null};
+let plan_iniciado=false, ocupado=false;
 
+/* ---------- utilidades ---------- */
+async function sha256hex(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');}
+const huella=(email,clave)=>sha256hex(limpiaMail(email)+':'+limpiaClave(clave));
+function nuevaClave(){const r=crypto.getRandomValues(new Uint8Array(8));return Array.from(r,x=>ALFA[x&31]).join('');}
+let _disp=null;
+function idDispositivo(){
+  if(_disp)return _disp;
+  let d=LS.get('pc_disp');
+  if(!d||!/^[a-z0-9-]{8,64}$/.test(d)){d=(crypto.randomUUID?crypto.randomUUID():Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join(''));LS.set('pc_disp',d);}
+  return _disp=d;
+}
+function dispositivo(){
+  const u=navigator.userAgent;
+  const os=/Windows/.test(u)?'Windows':/Android/.test(u)?'Android':/iPhone|iPad/.test(u)?'iOS':/Mac OS/.test(u)?'Mac':/Linux/.test(u)?'Linux':'Otro';
+  const nav=/Edg\//.test(u)?'Edge':/OPR\//.test(u)?'Opera':/Chrome\//.test(u)?'Chrome':/Firefox\//.test(u)?'Firefox':/Safari\//.test(u)?'Safari':'Otro';
+  return os+' · '+nav;
+}
+let _ubic=null;
+function ubicacion(){
+  if(_ubic)return _ubic;
+  const pedir=async(url,map)=>{const c=new AbortController();const t=setTimeout(()=>c.abort(),4000);try{const r=await fetch(url,{signal:c.signal,cache:'no-store'});if(!r.ok)throw 0;return map(await r.json());}finally{clearTimeout(t);}};
+  const fmt=o=>{o.lugar=[o.ciudad,o.region,o.pais].filter(Boolean).join(', ');return o;};
+  return _ubic=pedir('https://get.geojs.io/v1/ip/geo.json',j=>fmt({ip:j.ip||'',ciudad:j.city||'',region:j.region||'',pais:j.country||'',org:j.organization_name||''}))
+    .catch(()=>pedir('https://ipwho.is/',j=>fmt({ip:j.ip||'',ciudad:j.city||'',region:j.region||'',pais:j.country||'',org:(j.connection&&(j.connection.isp||j.connection.org))||''})))
+    .catch(()=>({ip:'',ciudad:'',region:'',pais:'',org:'',lugar:''}));
+}
+function fallos(){try{return JSON.parse(LS.get('pc_fallos')||'{}')}catch(e){return {}}}
+function bloqueadoHasta(){const f=fallos();return f.hasta&&f.hasta>Date.now()?f.hasta:0;}
+function sumarFallo(){const f=fallos();f.n=(f.n||0)+1;if(f.n>=MAX_FALLOS){f.hasta=Date.now()+BLOQUEO_MIN*60000;f.n=0;}LS.set('pc_fallos',JSON.stringify(f));}
+async function registrarIntento(email,motivo){
+  try{const u=await ubicacion();await addDoc(collection(db,'intentos'),{email:String(email||'').slice(0,120),fecha:serverTimestamp(),motivo,disp:dispositivo(),lugar:[u.lugar,u.ip].filter(Boolean).join(' · ').slice(0,200)});}catch(e){console.error(e);}
+}
+async function asegurarAnonimo(){
+  if(auth.currentUser&&!auth.currentUser.isAnonymous)await signOut(auth);
+  if(!auth.currentUser)await signInAnonymously(auth);
+  return auth.currentUser;
+}
+
+/* ---------- pantallas de acceso ---------- */
 function pantalla(html){candado.innerHTML='<div class="caja">'+html+'</div>';candado.hidden=false;}
 function vistaCargando(t){pantalla('<h2>Plan de visitas Cecinas</h2><p>'+esc(t||'Cargando…')+'</p>');}
-function errAuth(e){
-  const c=e&&e.code;
-  if(c==='auth/invalid-credential'||c==='auth/wrong-password'||c==='auth/user-not-found'||c==='auth/invalid-login-credentials')return 'Correo o contraseña incorrectos. Si aún no tienes cuenta, usa «Crear cuenta».';
-  if(c==='auth/email-already-in-use')return 'Ese correo ya tiene una cuenta. Usa «Entrar». Si olvidaste tu contraseña, pide al administrador que la restablezca.';
-  if(c==='auth/weak-password')return 'La contraseña debe tener al menos 8 caracteres.';
-  if(c==='auth/invalid-email')return 'El correo no es válido.';
-  if(c==='auth/too-many-requests')return 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo.';
-  if(c==='auth/network-request-failed')return 'Sin conexión. Revisa tu internet.';
-  return 'No se pudo completar. Inténtalo de nuevo.';
-}
-function proveedorMs(){
-  const p=new OAuthProvider('microsoft.com');
-  p.setCustomParameters({tenant:TENANT,prompt:'select_account'});
-  p.addScope('email');p.addScope('profile');
-  return p;
-}
-function errMs(e){
-  const c=e&&e.code;
-  if(c==='auth/popup-closed-by-user'||c==='auth/cancelled-popup-request')return 'Se cerró la ventana de Microsoft antes de terminar. Inténtalo de nuevo.';
-  if(c==='auth/operation-not-allowed')return 'El ingreso con Microsoft aún no está habilitado. Avisa al administrador.';
-  if(c==='auth/unauthorized-domain')return 'Este sitio no está autorizado para el ingreso con Microsoft. Avisa al administrador.';
-  if(c==='auth/network-request-failed')return 'Sin conexión. Revisa tu internet.';
-  const d=(e&&e.message)||'';
-  if(/AADSTS65001|consent|admin/i.test(d))return 'Microsoft pide aprobación del administrador de Agrosuper para esta aplicación. ('+esc(c||'')+')';
-  return 'No se pudo entrar con Microsoft ('+esc(c||'error')+').';
-}
-async function entrarMs(){
-  const b=$('ms-ok');if(b){b.disabled=true;b.textContent='Abriendo Microsoft…';}
-  try{await signInWithPopup(auth,proveedorMs());}
-  catch(e){
-    console.error(e);
-    if(e&&e.code==='auth/popup-blocked'){try{await signInWithRedirect(auth,proveedorMs());return;}catch(e2){console.error(e2);vistaInicio(errMs(e2));return;}}
-    if(e&&e.code==='auth/account-exists-with-different-credential'){
-      const cred=OAuthProvider.credentialFromError(e), mail=((e.customData&&e.customData.email)||'').toLowerCase();
-      if(cred&&mail){vistaVincular(mail,cred);return;}
-    }
-    vistaInicio(errMs(e));
-  }
-}
-function vistaVincular(mail,cred,msg){
-  pantalla('<h2>Vincular tu cuenta</h2><p>Ya existe una cuenta con <b>'+esc(mail)+'</b> creada con contraseña. Escríbela una sola vez para vincularla con tu cuenta Microsoft; después entrarás solo con Microsoft.</p>'+
-   '<input id="vk-pw" type="password" placeholder="Contraseña actual" autocomplete="current-password"><button id="vk-ok" type="button">Vincular y entrar</button> <button id="vk-x" class="sec" type="button">Cancelar</button>'+
-   (msg?'<p class="err" style="margin-top:10px">'+msg+'</p>':''));
-  $('vk-x').onclick=()=>vistaInicio();
-  const go=async()=>{
-    $('vk-ok').disabled=true;$('vk-ok').textContent='Vinculando…';
-    try{const r=await signInWithEmailAndPassword(auth,mail,$('vk-pw').value);await linkWithCredential(r.user,cred);}
-    catch(e){console.error(e);vistaVincular(mail,cred,errAuth(e));}
-  };
-  $('vk-ok').onclick=go;$('vk-pw').onkeydown=e=>{if(e.key==='Enter')go();};
-}
-function vistaInicio(msg){
-  if(!MS_ACTIVO){vistaLogin('entrar',msg);return;}
-  pantalla('<h2>Plan de visitas Cecinas</h2><p>Acceso restringido. Entra con tu cuenta de Agrosuper (la misma de Outlook y Teams).</p>'+
-   '<button id="ms-ok" type="button" style="display:flex;align-items:center;gap:10px;width:100%;justify-content:center;padding:11px 18px">'+
-   '<svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>'+
-   'Entrar con Microsoft (Agrosuper)</button>'+
-   (msg?'<p class="err" style="margin-top:12px">'+msg+'</p>':'')+
-   '<p style="margin-top:16px;font-size:12px"><a href="#" id="ms-pw">Entrar con correo y contraseña</a></p>');
-  $('ms-ok').onclick=entrarMs;
-  $('ms-pw').onclick=e=>{e.preventDefault();vistaLogin('entrar');};
-}
-function vistaLogin(modo,msg,mailPrev){
-  modo=modo||'entrar';
-  const reg=(modo==='crear');
-  pantalla('<h2>Plan de visitas Cecinas</h2><p>'+(reg?'Crea tu cuenta con tu correo corporativo. Después deberás ser autorizado por el administrador.':'Acceso restringido. Entra con tu correo y contraseña.')+'</p>'+
-   (CODIGO_URL?'<p style="background:#FFF6E6;border-radius:8px;padding:8px 10px"><b>Recibiste un código de activación.</b> '+(reg?'Crea tu cuenta con el mismo correo al que te llegó.':'Entra con tu cuenta, o usa «Crear cuenta» si es la primera vez, con el mismo correo al que te llegó.')+'</p>':'')+
+const AVISO='<p class="nota-acc">Tu clave es personal: sirve en máximo '+MAX_DISP+' dispositivos y en uno a la vez. Por seguridad se registra cada ingreso (fecha, duración, dispositivo y ubicación aproximada según IP).</p>';
+function vistaLogin(msg,mailPrev,renovar){
+  const bl=bloqueadoHasta();
+  pantalla('<h2>Plan de visitas Cecinas</h2><p>Acceso restringido. Entra con tu correo <b>@agrosuper.com</b> y la clave personal que recibiste por correo.</p>'+
    '<input id="lg-mail" type="email" placeholder="nombre@agrosuper.com" autocomplete="username" value="'+esc(mailPrev||LS.get('pc_email')||'')+'">'+
-   '<input id="lg-pw" type="password" placeholder="Contraseña'+(reg?' (mínimo 8 caracteres)':'')+'" autocomplete="'+(reg?'new-password':'current-password')+'">'+
-   (reg?'<input id="lg-pw2" type="password" placeholder="Repite la contraseña" autocomplete="new-password">':'')+
-   '<button id="lg-ok" type="button">'+(reg?'Crear cuenta':'Entrar')+'</button> <button id="lg-alt" class="sec" type="button">'+(reg?'Ya tengo cuenta':'Crear cuenta')+'</button>'+
+   '<input id="lg-cl" type="text" placeholder="Clave (8 caracteres)" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" style="text-transform:uppercase;letter-spacing:3px">'+
+   '<button id="lg-ok" type="button"'+(bl?' disabled':'')+'>Entrar</button>'+
+   (bl?'<p class="err" style="margin-top:12px">Demasiados intentos fallidos. Intenta de nuevo a las '+new Date(bl).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'})+'.</p>':'')+
    (msg?'<p class="err" style="margin-top:12px">'+msg+'</p>':'')+
-   (reg?'':'<p style="margin-top:12px;font-size:12px">¿Olvidaste tu contraseña? Pide al administrador que la restablezca.</p>')+
-   (MS_ACTIVO?'<p style="margin-top:8px;font-size:12px"><a href="#" id="lg-ms">← Entrar con Microsoft</a></p>':''));
-  if($('lg-ms'))$('lg-ms').onclick=e=>{e.preventDefault();vistaInicio();};
-  const go=async()=>{
-    const m=$('lg-mail').value.trim().toLowerCase(), pw=$('lg-pw').value;
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m)){vistaLogin(modo,'Escribe un correo válido.',m);return;}
-    if(pw.length<8){vistaLogin(modo,'La contraseña debe tener al menos 8 caracteres.',m);return;}
-    if(reg&&pw!==$('lg-pw2').value){vistaLogin(modo,'Las contraseñas no coinciden.',m);return;}
-    $('lg-ok').disabled=true;$('lg-ok').textContent='Un momento…';
-    try{
-      if(reg)await createUserWithEmailAndPassword(auth,m,pw);else await signInWithEmailAndPassword(auth,m,pw);
-      LS.set('pc_email',m);
-    }catch(e){console.error(e);vistaLogin(modo,errAuth(e),m);}
-  };
+   '<p style="margin-top:14px">'+(renovar?'<b>¿Se venció tu clave?</b> ':'¿No tienes clave o se venció? ')+'<a href="#" id="lg-sol">'+(renovar?'Solicitar renovación':'Solicitar acceso')+'</a></p>'+
+   AVISO+'<p style="margin-top:10px;font-size:11px;text-align:right"><a href="#" id="lg-adm" style="color:var(--t2)">Administrador</a></p>');
+  $('lg-sol').onclick=e=>{e.preventDefault();vistaSolicitud(limpiaMail($('lg-mail').value),renovar?'renovacion':'nueva');};
+  $('lg-adm').onclick=e=>{e.preventDefault();vistaAdmin();};
+  const go=()=>entrar(limpiaMail($('lg-mail').value),limpiaClave($('lg-cl').value));
   $('lg-ok').onclick=go;
-  $('lg-alt').onclick=()=>vistaLogin(reg?'entrar':'crear','',$('lg-mail').value.trim().toLowerCase());
-  ['lg-mail','lg-pw','lg-pw2'].forEach(id=>{const el=$(id);if(el)el.onkeydown=e=>{if(e.key==='Enter')go();};});
+  ['lg-mail','lg-cl'].forEach(id=>$(id).onkeydown=e=>{if(e.key==='Enter')go();});
+  if(mailPrev)$('lg-cl').focus();
 }
-function vistaCodigo(email,u,msg){
-  pantalla('<h2>Activa tu acceso</h2><p>Tu correo <b>'+esc(email)+'</b> ya está autorizado. Para activarlo, escribe el <b>código de activación</b> que te llegó por correo desde <b>'+esc(ADMIN)+'</b> (o abre el enlace de ese correo).</p>'+
-   '<input id="vf-cod" type="text" maxlength="16" autocomplete="one-time-code" placeholder="Código de activación" value="'+esc(CODIGO_URL)+'" style="text-transform:uppercase;letter-spacing:2px">'+
-   '<button id="vf-ok" type="button">Activar</button> <button id="vf-s" class="sec" type="button">Salir</button>'+
-   (msg?'<p class="err" style="margin-top:10px">'+msg+'</p>':'<p style="margin-top:12px;font-size:12px">¿No te ha llegado? Revisa también Correo no deseado o pídelo al administrador.</p>'));
-  $('vf-s').onclick=()=>signOut(auth);
-  const go=async()=>{
-    const c=$('vf-cod').value.trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
-    if(c.length<8){vistaCodigo(email,u,'Escribe el código completo.');return;}
-    $('vf-ok').disabled=true;$('vf-ok').textContent='Activando…';
-    try{await setDoc(doc(db,'verificados',email),{email,uid:u.uid,t:c,fecha:serverTimestamp()});iniciar(u);}
-    catch(e){console.error(e);vistaCodigo(email,u,'Código incorrecto o vencido. Pide uno nuevo al administrador.');}
-  };
-  $('vf-ok').onclick=go;$('vf-cod').onkeydown=e=>{if(e.key==='Enter')go();};
-  if(CODIGO_URL&&!msg&&!vistaCodigo.auto){vistaCodigo.auto=true;go();}
+async function entrar(email,clave){
+  if(bloqueadoHasta()){vistaLogin('',email);return;}
+  if(!DOM.test(email)){vistaLogin('Solo se aceptan correos <b>@agrosuper.com</b>.',email);return;}
+  if(clave.length<8){vistaLogin('Escribe tu clave completa (8 caracteres).',email);return;}
+  $('lg-ok').disabled=true;$('lg-ok').textContent='Validando…';
+  ocupado=true;
+  try{
+    const u=await asegurarAnonimo(), d=idDispositivo(), h=await huella(email,clave);
+    try{await setDoc(doc(db,'vinculos',u.uid),{email,h,d,t:serverTimestamp()});}
+    catch(e){
+      console.error(e);sumarFallo();registrarIntento(email,'clave');
+      vistaLogin('Correo o clave incorrectos, o tu clave venció o fue desactivada.',email,true);return;
+    }
+    LS.set('pc_email',email);LS.del('pc_fallos');
+    try{await updateDoc(doc(db,'cuentas',email),{disps:arrayUnion(d),activa:{uid:u.uid,d,t:serverTimestamp()}});}
+    catch(e){
+      console.error(e);registrarIntento(email,'dispositivos');
+      try{await deleteDoc(doc(db,'vinculos',u.uid));}catch(x){}
+      vistaLogin('Tu clave ya está registrada en '+MAX_DISP+' dispositivos. Para usarla en este, pide al administrador que libere tus dispositivos.',email);return;
+    }
+    const c=await getDoc(doc(db,'cuentas',email));
+    await abrirPlanUsuario(u,{email,d},c.data());
+  }catch(e){console.error(e);vistaLogin('No se pudo validar. Revisa tu conexión e inténtalo de nuevo.',email);}
+  finally{ocupado=false;}
 }
-async function vistaSolicitud(email){
-  let sol=null;try{const s=await getDoc(doc(db,'solicitudes',email));if(s.exists())sol=s.data();}catch(e){}
-  if(sol){
-    pantalla('<h2>Solicitud enviada</h2><p>Tu correo <b>'+esc(email)+'</b> está pendiente de autorización ('+esc(fh(sol.fecha))+'). Cuando sea aprobada te llegará un correo con tu código de activación.</p><button id="so-r" type="button">Revisar de nuevo</button> <button id="so-s" class="sec" type="button">Salir</button>');
-    $('so-r').onclick=()=>iniciar(sesion.u);$('so-s').onclick=()=>signOut(auth);
-    return;
-  }
-  pantalla('<h2>Sin autorización aún</h2><p>El correo <b>'+esc(email)+'</b> todavía no tiene acceso. Puedes solicitarlo y será revisado.</p><input id="so-n" type="text" maxlength="120" placeholder="Tu nombre y sucursal / cargo"><button id="so-ok" type="button">Solicitar acceso</button> <button id="so-s" class="sec" type="button">Salir</button><p id="so-m" style="margin-top:10px"></p>');
-  $('so-s').onclick=()=>signOut(auth);
+function vistaSolicitud(mailPrev,tipo,msg){
+  pantalla('<h2>'+(tipo==='renovacion'?'Renovar acceso':'Solicitar acceso')+'</h2><p>Escribe tu correo <b>@agrosuper.com</b>. Cuando el administrador apruebe la solicitud, te llegará a ese correo una <b>clave personal</b> válida por '+DIAS_CLAVE+' días.</p>'+
+   '<input id="so-mail" type="email" placeholder="nombre@agrosuper.com" value="'+esc(mailPrev||'')+'">'+
+   '<input id="so-n" type="text" maxlength="120" placeholder="Nombre, cargo y sucursal">'+
+   '<button id="so-ok" type="button">Enviar solicitud</button> <button id="so-x" class="sec" type="button">Volver</button>'+
+   (msg?'<p class="err" style="margin-top:10px">'+msg+'</p>':''));
+  $('so-x').onclick=()=>vistaLogin('',limpiaMail($('so-mail').value));
   $('so-ok').onclick=async()=>{
-    const n=$('so-n').value.trim();
-    if(n.length<3){$('so-m').innerHTML='<span class="err">Escribe tu nombre y sucursal / cargo.</span>';return;}
-    try{await setDoc(doc(db,'solicitudes',email),{email,nombre:n,fecha:serverTimestamp()});vistaSolicitud(email);}
-    catch(e){console.error(e);$('so-m').innerHTML='<span class="err">No se pudo enviar la solicitud.</span>';}
+    const m=limpiaMail($('so-mail').value), n=$('so-n').value.trim().replace(/\s+/g,' ');
+    if(!DOM.test(m)){vistaSolicitud(m,tipo,'Solo se aceptan correos <b>@agrosuper.com</b>.');return;}
+    if(n.length<3){vistaSolicitud(m,tipo,'Escribe tu nombre, cargo y sucursal.');return;}
+    $('so-ok').disabled=true;$('so-ok').textContent='Enviando…';
+    ocupado=true;
+    try{await asegurarAnonimo();await setDoc(doc(db,'solicitudes',m),{email:m,nombre:n.slice(0,120),fecha:serverTimestamp(),tipo:tipo==='renovacion'?'renovacion':'nueva'});LS.set('pc_email',m);
+      pantalla('<h2>Solicitud enviada</h2><p>Tu solicitud para <b>'+esc(m)+'</b> quedó registrada. Cuando sea aprobada recibirás tu clave personal en ese correo (revisa también Correo no deseado).</p><button id="so-v" type="button">Volver al inicio</button>');
+      $('so-v').onclick=()=>vistaLogin('',m);
+    }catch(e){console.error(e);vistaSolicitud(m,tipo,'No se pudo enviar la solicitud. Inténtalo de nuevo.');}
+    finally{ocupado=false;}
   };
 }
+function vistaAdmin(msg){
+  pantalla('<h2>Administrador</h2><input id="ad-mail" type="email" value="'+esc(ADMIN_MAIL)+'" autocomplete="username"><input id="ad-pw" type="password" placeholder="Contraseña" autocomplete="current-password"><button id="ad-ok" type="button">Entrar</button> <button id="ad-x" class="sec" type="button">Volver</button>'+(msg?'<p class="err" style="margin-top:10px">'+msg+'</p>':''));
+  $('ad-x').onclick=()=>vistaLogin();
+  const go=async()=>{$('ad-ok').disabled=true;try{await signInWithEmailAndPassword(auth,limpiaMail($('ad-mail').value),$('ad-pw').value);}catch(e){console.error(e);vistaAdmin('Correo o contraseña incorrectos.');}};
+  $('ad-ok').onclick=go;$('ad-pw').onkeydown=e=>{if(e.key==='Enter')go();};
+}
+
+/* ---------- reanudar al recargar ---------- */
+async function reanudar(u){
+  vistaCargando('Validando acceso…');
+  let v=null;
+  try{const s=await getDoc(doc(db,'vinculos',u.uid));if(s.exists())v=s.data();}catch(e){console.error(e);}
+  if(!v||v.d!==idDispositivo()){vistaLogin();return;}
+  let c=null;
+  try{c=(await getDoc(doc(db,'cuentas',v.email))).data();}catch(e){console.error(e);}
+  if(!c){vistaLogin('Tu clave venció, cambió o fue desactivada.',v.email,true);return;}
+  if(c.activa&&c.activa.uid===u.uid&&(c.disps||[]).includes(v.d)){await abrirPlanUsuario(u,v,c);return;}
+  if(!c.activa){try{await tomarSesion(u,v);await abrirPlanUsuario(u,v,(await getDoc(doc(db,'cuentas',v.email))).data());}catch(e){console.error(e);vistaLogin('',v.email);}return;}
+  pantalla('<h2>Sesión abierta en otro dispositivo</h2><p>Tu cuenta <b>'+esc(v.email)+'</b> se está usando en otro dispositivo desde el '+esc(fh(c.activa.t))+'. Solo se permite un dispositivo a la vez.</p><button id="ot-u" type="button">Usar aquí (cierra el otro)</button> <button id="ot-s" class="sec" type="button">Salir</button>');
+  $('ot-u').onclick=async()=>{$('ot-u').disabled=true;try{await tomarSesion(u,v);location.reload();}catch(e){console.error(e);vistaLogin('No se pudo abrir la sesión aquí.',v.email);}};
+  $('ot-s').onclick=async()=>{try{await deleteDoc(doc(db,'vinculos',u.uid));}catch(e){}location.reload();};
+}
+const tomarSesion=(u,v)=>updateDoc(doc(db,'cuentas',v.email),{disps:arrayUnion(v.d),activa:{uid:u.uid,d:v.d,t:serverTimestamp()}});
 
 /* ---------- datos cifrados ---------- */
 function b64u(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;}
@@ -660,30 +674,70 @@ async function descifrar(k){
 }
 const MSG={
   sinllave:['Falta la llave de datos','El administrador aún no ha cargado la llave de datos en el sistema.'],
-  permiso:['Sin permiso','No fue posible validar tu autorización. Si acabas de ser autorizado, vuelve a intentarlo.'],
+  permiso:['Sin permiso','No fue posible validar tu acceso. Vuelve a entrar.'],
   llave:['Datos no disponibles','La llave guardada no abre los datos publicados. Avisa al administrador.'],
   red:['No se pudieron descargar los datos','Revisa tu conexión e inténtalo de nuevo.'],
   formato:['Datos no reconocidos','El archivo publicado no tiene el formato esperado.'],
   navegador:['Navegador no compatible','Abre este enlace en Chrome, Edge o Safari actualizados.']
 };
-function vistaError(tipo,admin){
+function vistaError(tipo){
   const m=MSG[tipo]||['No se pudo abrir el plan','Ocurrió un error inesperado al leer los datos.'];
-  pantalla('<h2>'+m[0]+'</h2><p>'+m[1]+'</p><button type="button" onclick="location.reload()">Reintentar</button> '+(admin?'<button id="er-a" type="button">Administrar</button> ':'')+'<button id="er-s" class="sec" type="button">Salir</button>');
-  $('er-s').onclick=()=>signOut(auth);
-  if(admin)$('er-a').onclick=abrirAdmin;
+  pantalla('<h2>'+m[0]+'</h2><p>'+m[1]+'</p><button type="button" onclick="location.reload()">Reintentar</button> '+(sesion.modo==='admin'?'<button id="er-a" type="button">Administrar</button> ':'')+'<button id="er-s" class="sec" type="button">Salir</button>');
+  $('er-s').onclick=salir;
+  if(sesion.modo==='admin')$('er-a').onclick=abrirAdmin;
 }
 
-/* ---------- sesión de uso ---------- */
-function dispositivo(){
-  const u=navigator.userAgent;
-  const os=/Windows/.test(u)?'Windows':/Android/.test(u)?'Android':/iPhone|iPad/.test(u)?'iOS':/Mac OS/.test(u)?'Mac':/Linux/.test(u)?'Linux':'Otro';
-  const nav=/Edg\//.test(u)?'Edge':/OPR\//.test(u)?'Opera':/Chrome\//.test(u)?'Chrome':/Firefox\//.test(u)?'Firefox':/Safari\//.test(u)?'Safari':'Otro';
-  return os+' · '+nav;
+/* ---------- abrir el plan ---------- */
+async function cargarPlan(){
+  vistaCargando('Abriendo el plan…');
+  sesion.llave=await pedirLlave();
+  sesion.datos=await descifrar(sesion.llave);
+  if(!plan_iniciado){plan_iniciado=true;window.D=sesion.datos;try{window.__iniciarPlan();}catch(e){console.error(e);}}
+  candado.hidden=true;marcaDeAgua();barra();
+  if(!sesion.sid)abrirSesion();
+  if(!sesion.timer)sesion.timer=setInterval(revisar,CADA_MIN*60000);
 }
+async function abrirPlanUsuario(u,v,c){
+  sesion.modo='usuario';sesion.uid=u.uid;sesion.email=v.email;sesion.d=v.d;sesion.nombre=(c&&c.nombre)||'';sesion.exp=c&&c.exp;
+  try{await cargarPlan();}catch(e){console.error(e);if(e&&e.tipo==='permiso'){vistaLogin('Tu clave venció, cambió o fue desactivada.',v.email,true);}else vistaError(e&&e.tipo);return;}
+  if(sesion.unsub)sesion.unsub();
+  sesion.unsub=onSnapshot(doc(db,'cuentas',v.email),s=>{
+    const c=s.data();
+    if(!c||!c.activa||c.activa.uid!==sesion.uid)cerrado('otro');
+  },()=>cerrado('acceso'));
+}
+async function iniciarAdmin(u){
+  sesion.modo='admin';sesion.uid=u.uid;sesion.email=ADMIN_MAIL;sesion.nombre='Administrador';
+  try{await cargarPlan();}catch(e){console.error(e);vistaError(e&&e.tipo);}
+}
+function cerrado(motivo){
+  if(sesion.latido){clearInterval(sesion.latido);sesion.latido=null;}
+  if(sesion.timer){clearInterval(sesion.timer);sesion.timer=null;}
+  if(sesion.unsub){sesion.unsub();sesion.unsub=null;}
+  window.D=null;
+  pantalla(motivo==='otro'?'<h2>Sesión cerrada</h2><p>Tu cuenta se abrió en otro dispositivo, así que esta sesión se cerró. Solo se permite un dispositivo a la vez.</p><button type="button" onclick="location.reload()">Continuar</button>'
+    :'<h2>Acceso finalizado</h2><p>Tu clave venció, cambió o fue desactivada.</p><button type="button" onclick="location.reload()">Continuar</button>');
+}
+async function salir(){
+  try{
+    if(sesion.sid)await updateDoc(doc(db,'sesiones',sesion.sid),{fin:serverTimestamp()});
+  }catch(e){}
+  try{
+    if(sesion.modo==='usuario'){
+      if(sesion.unsub){sesion.unsub();sesion.unsub=null;}
+      try{await updateDoc(doc(db,'cuentas',sesion.email),{activa:null});}catch(e){}
+      try{await deleteDoc(doc(db,'vinculos',sesion.uid));}catch(e){}
+    }else await signOut(auth);
+  }catch(e){}
+  location.reload();
+}
+
+/* ---------- registro de uso ---------- */
 async function abrirSesion(){
   sesion.sid=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random().toString(16).slice(2));
-  try{await setDoc(doc(db,'sesiones',sesion.sid),{email:sesion.email,nombre:(sesion.perfil&&sesion.perfil.nombre)||'',inicio:serverTimestamp(),ultimo:serverTimestamp(),seg:0,disp:dispositivo()});}
-  catch(e){console.error(e);return;}
+  const u=await ubicacion();
+  try{await setDoc(doc(db,'sesiones',sesion.sid),{email:sesion.email,nombre:sesion.nombre||'',uid:sesion.uid,inicio:serverTimestamp(),ultimo:serverTimestamp(),seg:0,disp:dispositivo(),d:sesion.d||'',ip:u.ip,lugar:u.lugar,org:u.org});}
+  catch(e){console.error(e);sesion.sid=null;return;}
   sesion.latido=setInterval(async()=>{
     if(document.visibilityState!=='visible')return;
     try{await updateDoc(doc(db,'sesiones',sesion.sid),{ultimo:serverTimestamp(),seg:increment(LATIDO_SEG)});}catch(e){}
@@ -696,200 +750,218 @@ function marcaDeAgua(){
 }
 function barra(){
   const b=$('barra');
-  b.innerHTML='<span>'+esc(sesion.email)+'</span>'+(sesion.esAdmin?'<button id="b-adm" type="button">Administrar</button>':'')+'<button id="b-out" class="sec" type="button">Salir</button>';
+  b.innerHTML='<span title="'+esc(sesion.email)+'">'+esc(sesion.email)+(sesion.modo==='usuario'&&sesion.exp?' · vence '+esc(fd(sesion.exp)):'')+'</span>'+(sesion.modo==='admin'?'<button id="b-adm" type="button">Administrar</button>':'')+'<button id="b-out" class="sec" type="button">Salir</button>';
   b.hidden=false;
-  $('b-out').onclick=()=>signOut(auth);
-  if(sesion.esAdmin)$('b-adm').onclick=abrirAdmin;
-}
-let plan_iniciado=false;
-async function iniciar(u){
-  sesion.u=u;sesion.email=(u.email||'').toLowerCase();sesion.esAdmin=(sesion.email===ADMIN);
-  if(!sesion.email){pantalla('<h2>Cuenta sin correo</h2><p>Tu cuenta Microsoft no entregó un correo. Avisa al administrador.</p><button id="nc-s" class="sec" type="button">Salir</button>');$('nc-s').onclick=()=>signOut(auth);return;}
-  vistaCargando('Validando acceso…');
-  if(sesion.esAdmin){sesion.perfil={nombre:'Administrador'};}
-  else{
-    let p=null;
-    try{const s=await getDoc(doc(db,'autorizados',sesion.email));if(s.exists()&&s.data().activo!==false)p=s.data();}catch(e){console.error(e);}
-    if(!p){await vistaSolicitud(sesion.email);return;}
-    let ver=false;
-    try{const v=await getDoc(doc(db,'verificados',sesion.email));ver=v.exists()&&v.data().uid===u.uid;}catch(e){console.error(e);}
-    if(!ver){vistaCodigo(sesion.email,u);return;}
-    sesion.perfil=p;
-  }
-  try{
-    vistaCargando('Abriendo el plan…');
-    sesion.llave=await pedirLlave();
-    sesion.datos=await descifrar(sesion.llave);
-  }catch(e){console.error(e);vistaError(e&&e.tipo,sesion.esAdmin);return;}
-  if(!plan_iniciado){
-    plan_iniciado=true;
-    window.D=sesion.datos;
-    try{window.__iniciarPlan();}catch(e){console.error(e);}
-  }
-  candado.hidden=true;
-  marcaDeAgua();barra();
-  if(!sesion.sid)abrirSesion();
-  if(!sesion.timer)sesion.timer=setInterval(revisar,CADA_MIN*60000);
+  $('b-out').onclick=salir;
+  if(sesion.modo==='admin')$('b-adm').onclick=abrirAdmin;
 }
 async function revisar(){
   try{
-    if(!sesion.esAdmin){const s=await getDoc(doc(db,'autorizados',sesion.email));if(!s.exists()||s.data().activo===false){location.reload();return;}}
     const k=await pedirLlave();
     let n;try{n=await descifrar(k);}catch(e){if(e&&e.tipo==='llave'){location.reload();}return;}
     if(k!==sesion.llave){location.reload();return;}
-    if(n.generado!==window.D.generado||n.horaDatos!==window.D.horaDatos)$('aviso').hidden=false;
-  }catch(e){ if(e&&e.code==='permission-denied')location.reload(); }
+    if(window.D&&(n.generado!==window.D.generado||n.horaDatos!==window.D.horaDatos))$('aviso').hidden=false;
+  }catch(e){ if(e&&e.tipo==='permiso'){ if(sesion.modo==='usuario')cerrado('acceso'); else location.reload(); } }
 }
+
+/* ---------- Excel (xlsx con tabla "Claves") ---------- */
+const CRC=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
+function crc32(u){let c=0xFFFFFFFF;for(let i=0;i<u.length;i++)c=CRC[(c^u[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+function zip(files){ // files: [[nombre, texto]] sin compresion
+  const enc=new TextEncoder(),partes=[],central=[];let off=0;
+  for(const [n,txt] of files){
+    const nb=enc.encode(n),db_=enc.encode(txt),c=crc32(db_);
+    const h=new DataView(new ArrayBuffer(30));
+    h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x0800,true);h.setUint16(8,0,true);h.setUint32(14,c,true);h.setUint32(18,db_.length,true);h.setUint32(22,db_.length,true);h.setUint16(26,nb.length,true);
+    partes.push(new Uint8Array(h.buffer),nb,db_);
+    const ce=new DataView(new ArrayBuffer(46));
+    ce.setUint32(0,0x02014b50,true);ce.setUint16(4,20,true);ce.setUint16(6,20,true);ce.setUint16(8,0x0800,true);ce.setUint32(16,c,true);ce.setUint32(20,db_.length,true);ce.setUint32(24,db_.length,true);ce.setUint16(28,nb.length,true);ce.setUint32(42,off,true);
+    central.push(new Uint8Array(ce.buffer),nb);
+    off+=30+nb.length+db_.length;
+  }
+  const tam=central.reduce((a,b)=>a+b.length,0);
+  const fin=new DataView(new ArrayBuffer(22));
+  fin.setUint32(0,0x06054b50,true);fin.setUint16(8,files.length,true);fin.setUint16(10,files.length,true);fin.setUint32(12,tam,true);fin.setUint32(16,off,true);
+  return new Blob([...partes,...central,new Uint8Array(fin.buffer)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+function xlsxClaves(filas){ // filas: [{Correo,Nombre,Clave,Vence,Tipo}]
+  const COL=['Correo','Nombre','Clave','Vence','Tipo','Estado'];
+  const x=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'');
+  const L=i=>String.fromCharCode(65+i);
+  const celda=(r,i,v,s)=>'<c r="'+L(i)+r+'" t="inlineStr"'+(s?' s="'+s+'"':'')+'><is><t xml:space="preserve">'+x(v)+'</t></is></c>';
+  const ult=filas.length+1, ref='A1:'+L(COL.length-1)+ult;
+  let sd='<row r="1">'+COL.map((c,i)=>celda(1,i,c,1)).join('')+'</row>';
+  filas.forEach((f,j)=>{const r=j+2;sd+='<row r="'+r+'">'+COL.map((c,i)=>celda(r,i,f[c]||'')).join('')+'</row>';});
+  const W=[34,34,14,13,14,14];
+  return zip([
+    ['[Content_Types].xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
+    ['_rels/.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Claves" sheetId="1" r:id="rId1"/></sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+    ['xl/styles.xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'],
+    ['xl/worksheets/sheet1.xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="'+ref+'"/><cols>'+W.map((w,i)=>'<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>').join('')+'</cols><sheetData>'+sd+'</sheetData><tableParts count="1"><tablePart r:id="rId1"/></tableParts></worksheet>'],
+    ['xl/worksheets/_rels/sheet1.xml.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/></Relationships>'],
+    ['xl/tables/table1.xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="Claves" displayName="Claves" ref="'+ref+'" totalsRowShown="0"><autoFilter ref="'+ref+'"/><tableColumns count="'+COL.length+'">'+COL.map((c,i)=>'<tableColumn id="'+(i+1)+'" name="'+c+'"/>').join('')+'</tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>']
+  ]);
+}
+window.__xlsxClaves=xlsxClaves; // para pruebas
 
 /* ---------- administración ---------- */
 const adm=$('adm');
-let cacheSes=null;
 function abrirAdmin(){adm.hidden=false;document.body.style.overflow='hidden';pintarAdmin('solicitudes');}
 function cerrarAdmin(){adm.hidden=true;document.body.style.overflow='';}
-function pintarAdmin(tab){
-  const T=[['solicitudes','Solicitudes'],['autorizados','Autorizados'],['actividad','Actividad'],['llave','Llave de datos']];
+function pintarAdmin(tab,nota){
+  const T=[['solicitudes','Solicitudes'],['enviar','Por enviar'],['usuarios','Usuarios'],['actividad','Actividad'],['llave','Llave de datos']];
   adm.innerHTML='<div class="in"><div class="top"><h2>Administración de accesos</h2><button id="a-x" class="sec" type="button">Volver al plan</button></div><div class="tabs">'+
-    T.map(t=>'<button type="button" data-t="'+t[0]+'" class="'+(t[0]===tab?'on':'')+'">'+t[1]+'</button>').join('')+'</div><div class="panel" id="a-p">Cargando…</div></div>';
+    T.map(t=>'<button type="button" data-t="'+t[0]+'" class="'+(t[0]===tab?'on':'')+'">'+t[1]+'</button>').join('')+'</div>'+(nota?'<p class="ok-msg">'+nota+'</p>':'')+'<div class="panel" id="a-p">Cargando…</div></div>';
   $('a-x').onclick=cerrarAdmin;
   adm.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>pintarAdmin(b.dataset.t));
-  ({solicitudes:tabSolicitudes,autorizados:tabAutorizados,actividad:tabActividad,llave:tabLlave})[tab]();
+  ({solicitudes:tabSolicitudes,enviar:tabEnviar,usuarios:tabUsuarios,actividad:tabActividad,llave:tabLlave})[tab]();
 }
 const P=h=>{$('a-p').innerHTML=h;};
-/* códigos de activación (los envía el administrador desde su Outlook) */
-function nuevoCodigo(){const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',r=crypto.getRandomValues(new Uint8Array(10));return Array.from(r,x=>A[x&31]).join('');}
-function datosCodigo(){return {t:nuevoCodigo(),creado:serverTimestamp(),exp:Timestamp.fromMillis(Date.now()+DIAS_CODIGO*864e5),enviado:null};}
-const vencido=c=>!c||!c.exp||!c.exp.toMillis||c.exp.toMillis()<Date.now();
-function textoCorreo(email,nombre,c){
-  const n=String(nombre||'').split(/\s[-–]\s|,/)[0].trim();
-  const fs=c.exp.toDate().toLocaleDateString('es-CL',{timeZone:'America/Santiago',day:'2-digit',month:'2-digit',year:'numeric'});
-  return {asunto:'Tu acceso al Plan de visitas Cecinas',
-    cuerpo:'Hola'+(n?' '+n:'')+',\n\nYa tienes acceso al Plan de visitas Cecinas. Para activarlo:\n\n1. Abre este enlace: '+URL_ACCESO+'?c='+c.t+
-      '\n2. Entra con tu correo '+email+' (si es tu primera vez, usa «Crear cuenta» con este mismo correo).\n3. Si te lo pide, escribe tu código de activación: '+c.t+
-      '\n\nEl código es personal, vence el '+fs+' y no debes compartirlo.\n\nSaludos,\nDiego'};
+async function leerTodo(col){const s=await getDocs(collection(db,col));const o={};s.forEach(d=>o[d.id]=d.data());return o;}
+const vence=a=>a&&a.exp&&a.exp.toMillis?a.exp.toMillis():0;
+const dias=ms=>Math.ceil((ms-Date.now())/864e5);
+function estadoAcceso(a){
+  if(!a)return '<span class="nota">Sin acceso</span>';
+  if(a.activo===false)return '<span class="err">Desactivado</span>';
+  const v=vence(a);
+  if(v<Date.now())return '<span class="err">Vencida '+esc(fd(a.exp))+'</span>';
+  const n=dias(v);return '<span style="color:#1b7f3b;font-weight:700">Activa</span> <span class="nota">vence '+esc(fd(a.exp))+' ('+n+' d)</span>';
 }
-function abrirOutlook(email,nombre,c){
-  const m=textoCorreo(email,nombre,c);
-  window.open('https://outlook.office.com/mail/deeplink/compose?to='+encodeURIComponent(email)+'&subject='+encodeURIComponent(m.asunto)+'&body='+encodeURIComponent(m.cuerpo),'_blank','noopener');
+// genera clave, la deja activa y en "Por enviar"
+async function emitirClaves(lista,acc,cue){ // lista: [{email,nombre,tipo}]
+  for(let i=0;i<lista.length;i+=100){
+    const w=writeBatch(db);
+    for(const it of lista.slice(i,i+100)){
+      const e=it.email, clave=nuevaClave(), h=await huella(e,clave), exp=Timestamp.fromMillis(Date.now()+DIAS_CLAVE*864e5);
+      const nombre=it.nombre||(acc[e]&&acc[e].nombre)||(cue[e]&&cue[e].nombre)||'';
+      w.set(doc(db,'accesos',e),{email:e,nombre,h,activo:true,exp,emitida:serverTimestamp()});
+      if(cue[e])w.update(doc(db,'cuentas',e),{nombre,exp});
+      else w.set(doc(db,'cuentas',e),{email:e,nombre,exp,disps:[],activa:null});
+      w.set(doc(db,'porEnviar',e),{email:e,nombre,clave,exp,tipo:it.tipo||'nueva',creado:serverTimestamp()});
+      w.delete(doc(db,'solicitudes',e));
+    }
+    await w.commit();
+  }
 }
 async function tabSolicitudes(){
   try{
-    const s=await getDocs(collection(db,'solicitudes'));
-    const f=[];s.forEach(d=>f.push(d.data()));f.sort((a,b)=>(a.fecha&&b.fecha?a.fecha.seconds-b.fecha.seconds:0));
+    const [sol,acc,cue]=await Promise.all([leerTodo('solicitudes'),leerTodo('accesos'),leerTodo('cuentas')]);
+    const f=Object.values(sol).sort((a,b)=>(a.fecha&&b.fecha?a.fecha.seconds-b.fecha.seconds:0));
     if(!f.length){P('<p>No hay solicitudes pendientes.</p>');return;}
-    P('<p class="nota">Al autorizar se genera un código de activación. Luego envíalo desde la pestaña <b>Autorizados</b> con «Enviar por Outlook».</p><table><tr><th>Correo</th><th>Nombre / cargo</th><th>Solicitada</th><th></th></tr>'+f.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+esc(fh(r.fecha))+'</td><td><button class="mini" data-a="ok" data-e="'+esc(r.email)+'" data-n="'+esc(r.nombre)+'">Autorizar</button><button class="mini sec" data-a="no" data-e="'+esc(r.email)+'">Rechazar</button></td></tr>').join('')+'</table>');
-    $('a-p').querySelectorAll('button[data-a]').forEach(b=>b.onclick=async()=>{
-      b.disabled=true;
-      const e=b.dataset.e, ok=b.dataset.a==='ok';
-      try{
-        const w=writeBatch(db);
-        if(ok){
-          w.set(doc(db,'autorizados',e),{email:e,nombre:b.dataset.n,activo:true,desde:serverTimestamp()});
-          const v=await getDoc(doc(db,'verificados',e));
-          if(!v.exists())w.set(doc(db,'codigos',e),datosCodigo());
-        }
-        w.delete(doc(db,'solicitudes',e));
-        await w.commit();
-      }catch(x){alert('No se pudo completar: '+x.message);}
-      if(ok)pintarAdmin('autorizados');else tabSolicitudes();
-    });
+    const tipo=r=>acc[r.email]?'Renovación · '+estadoAcceso(acc[r.email]):'Nueva';
+    P('<div class="fila"><b>'+f.length+' solicitudes</b><button id="s-all" class="mini sec" type="button">Seleccionar todas</button><button id="s-ren" class="mini sec" type="button">Seleccionar renovaciones</button></div>'+
+      '<table><tr><th style="width:28px"><input type="checkbox" id="s-chk"></th><th>Correo</th><th>Nombre / cargo</th><th>Tipo</th><th>Solicitada</th></tr>'+
+      f.map(r=>'<tr><td><input type="checkbox" class="s-c" value="'+esc(r.email)+'" data-ren="'+(acc[r.email]?1:0)+'"></td><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+tipo(r)+'</td><td>'+esc(fh(r.fecha))+'</td></tr>').join('')+'</table>'+
+      '<div class="fila" style="margin-top:12px"><button id="s-ok" type="button">Aprobar seleccionadas</button><button id="s-no" class="peligro" type="button">Rechazar seleccionadas</button><span id="s-m" class="nota" style="margin:0"></span></div>'+
+      '<p class="nota">Al aprobar se genera una clave aleatoria de 8 caracteres por persona, válida por '+DIAS_CLAVE+' días. Las claves quedan en «Por enviar» para descargar el Excel.</p>');
+    const cks=()=>[...document.querySelectorAll('.s-c')];
+    const sel=()=>cks().filter(c=>c.checked).map(c=>c.value);
+    $('s-chk').onchange=e=>cks().forEach(c=>c.checked=e.target.checked);
+    $('s-all').onclick=()=>cks().forEach(c=>c.checked=true);
+    $('s-ren').onclick=()=>cks().forEach(c=>c.checked=c.dataset.ren==='1');
+    $('s-ok').onclick=async()=>{
+      const s=sel();if(!s.length){$('s-m').textContent='Selecciona al menos una.';return;}
+      if(!confirm('¿Aprobar '+s.length+' solicitud(es)? Se generará una clave nueva para cada una.'))return;
+      $('s-ok').disabled=true;$('s-m').textContent='Generando claves…';
+      try{await emitirClaves(s.map(e=>({email:e,nombre:sol[e].nombre,tipo:acc[e]?'renovacion':'nueva'})),acc,cue);pintarAdmin('enviar',s.length+' aprobada(s). Descarga el Excel y déjalo en la carpeta del flujo.');}
+      catch(e){console.error(e);$('s-m').textContent='Error: '+e.message;$('s-ok').disabled=false;}
+    };
+    $('s-no').onclick=async()=>{
+      const s=sel();if(!s.length){$('s-m').textContent='Selecciona al menos una.';return;}
+      if(!confirm('¿Rechazar y borrar '+s.length+' solicitud(es)?'))return;
+      try{const w=writeBatch(db);s.forEach(e=>w.delete(doc(db,'solicitudes',e)));await w.commit();}catch(e){alert(e.message);}
+      tabSolicitudes();
+    };
   }catch(e){P('<p class="err">Error: '+esc(e.message)+'</p>');}
 }
-async function tabAutorizados(){
+async function tabEnviar(){
   try{
-    const [sa,sc,sv]=await Promise.all([getDocs(collection(db,'autorizados')),getDocs(collection(db,'codigos')),getDocs(collection(db,'verificados'))]);
-    const f=[],cod={},ver={};sa.forEach(d=>f.push(d.data()));sc.forEach(d=>cod[d.id]=d.data());sv.forEach(d=>ver[d.id]=d.data());
-    f.sort((a,b)=>a.email.localeCompare(b.email));
-    const porEnviar=f.filter(r=>!ver[r.email]&&cod[r.email]&&!vencido(cod[r.email])&&!cod[r.email].enviado);
-    const activos=f.filter(r=>ver[r.email]).length;
-    const estado=r=>{
-      const v=ver[r.email],c=cod[r.email];
-      if(v)return '<span style="color:#1b7f3b;font-weight:700">Activado</span> <span class="nota">'+esc(fh(v.fecha))+'</span>';
-      if(!c)return '<span class="nota">Sin código</span>';
-      if(vencido(c))return '<span class="err">Código vencido</span>';
-      if(c.enviado)return 'Código enviado <span class="nota">'+esc(fh(c.enviado))+'</span>';
-      return '<b style="color:var(--naranja)">Por enviar</b>';
+    const pe=await leerTodo('porEnviar');
+    const f=Object.values(pe).sort((a,b)=>a.email.localeCompare(b.email));
+    if(!f.length){P('<p>No hay claves por enviar.</p><p class="nota">Cuando apruebes solicitudes, aparecerán aquí para descargar el Excel.</p>');return;}
+    P('<div class="fila"><b>'+f.length+' claves por enviar</b><button id="e-dl" type="button">Descargar Excel ('+f.length+')</button></div>'+
+      '<p class="nota">Guarda el archivo en la carpeta del flujo; Power Automate enviará a cada persona su clave desde tu Outlook y marcará la fila como «Enviado». Después de descargar, las claves se borran de este panel (quedan solo en el Excel).</p>'+
+      '<table><tr><th>Correo</th><th>Nombre</th><th>Tipo</th><th>Clave</th><th>Vence</th></tr>'+
+      f.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+esc(r.tipo==='renovacion'?'Renovación':'Nueva')+'</td><td><code>'+esc(r.clave.slice(0,2))+'••••••</code></td><td>'+esc(fd(r.exp))+'</td></tr>').join('')+'</table>');
+    $('e-dl').onclick=async()=>{
+      const filas=f.map(r=>({Correo:r.email,Nombre:r.nombre,Clave:r.clave,Vence:fd(r.exp),Tipo:r.tipo==='renovacion'?'Renovación':'Nueva',Estado:''}));
+      const ahora=new Date(),p=n=>String(n).padStart(2,'0');
+      const nombre='claves_plan_cecinas_'+ahora.getFullYear()+p(ahora.getMonth()+1)+p(ahora.getDate())+'_'+p(ahora.getHours())+p(ahora.getMinutes())+'.xlsx';
+      const a=document.createElement('a');a.href=URL.createObjectURL(xlsxClaves(filas));a.download=nombre;document.body.appendChild(a);a.click();a.remove();
+      setTimeout(async()=>{
+        if(!confirm('¿Se descargó bien «'+nombre+'»?\n\nAl aceptar, las claves se borran de este panel y quedan solo en el Excel.'))return;
+        try{const w=writeBatch(db);f.forEach(r=>w.delete(doc(db,'porEnviar',r.email)));await w.commit();}catch(e){alert(e.message);}
+        pintarAdmin('enviar','Excel descargado. Déjalo en la carpeta del flujo para que se envíen los correos.');
+      },800);
     };
-    const acciones=r=>{
-      const c=cod[r.email];let h='';
-      if(!ver[r.email]){
-        if(c&&!vencido(c))h+='<button class="mini" data-x="env" data-e="'+esc(r.email)+'">'+(c.enviado?'Reenviar':'Enviar por Outlook')+'</button><button class="mini sec" data-x="cop" data-e="'+esc(r.email)+'">Copiar</button>';
-        else h+='<button class="mini" data-x="gen" data-e="'+esc(r.email)+'">Generar código</button>';
-      }
-      return h+'<button class="mini peligro" data-x="del" data-e="'+esc(r.email)+'">Quitar</button>';
-    };
-    P('<div class="fila"><b>'+f.length+' correos autorizados</b><span class="nota" style="margin:0">· '+activos+' activados · '+porEnviar.length+' códigos por enviar</span>'+(porEnviar.length?'<button id="a-csv" class="mini sec" type="button">Descargar códigos por enviar (CSV)</button>':'')+'</div>'+
-      '<p class="nota">Cada persona necesita su código de activación, que tú le envías desde tu Outlook. «Enviar por Outlook» abre el correo ya redactado en una pestaña nueva; solo debes presionar Enviar.</p>'+
-      '<p class="nota">Agregar correos: uno por línea o separados por coma / punto y coma. Opcional: <i>correo, nombre</i> en cada línea.</p>'+
-      '<textarea id="a-lista" placeholder="juan.perez@agrosuper.com, Juan Pérez - Rancagua"></textarea><div class="fila" style="margin-top:8px"><button id="a-add" type="button">Autorizar estos correos</button><span id="a-m"></span></div><hr style="border:0;border-top:1px solid var(--linea);margin:14px 0">'+
-      '<table><tr><th>Correo</th><th>Nombre</th><th>Desde</th><th>Estado</th><th></th></tr>'+f.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+esc(fh(r.desde))+'</td><td>'+estado(r)+'</td><td style="white-space:nowrap">'+acciones(r)+'</td></tr>').join('')+'</table>');
-    const nombreDe=e=>(f.find(r=>r.email===e)||{}).nombre||'';
-    if($('a-csv'))$('a-csv').onclick=()=>{
-      const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
-      const filas=[['correo','nombre','codigo','enlace','vence']].concat(porEnviar.map(r=>{const c=cod[r.email];return [r.email,r.nombre,c.t,URL_ACCESO+'?c='+c.t,c.exp.toDate().toLocaleDateString('es-CL')];}));
-      const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+filas.map(x=>x.map(q).join(';')).join('\r\n')],{type:'text/csv'}));a.download='codigos_por_enviar.csv';a.click();
-    };
-    $('a-add').onclick=async()=>{
-      const filas=$('a-lista').value.split(/\n/).map(x=>x.trim()).filter(Boolean);
-      const out=[];
-      filas.forEach(l=>{
-        const partes=l.split(/[;,]/).map(x=>x.trim()).filter(Boolean);
-        const mails=partes.filter(x=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
-        const resto=partes.filter(x=>!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x)).join(' ');
-        mails.forEach(m=>out.push([m.toLowerCase(),mails.length===1?resto:'']));
+  }catch(e){P('<p class="err">Error: '+esc(e.message)+'</p>');}
+}
+async function tabUsuarios(){
+  try{
+    const [acc,cue]=await Promise.all([leerTodo('accesos'),leerTodo('cuentas')]);
+    const mails=[...new Set([...Object.keys(acc),...Object.keys(cue)])].sort();
+    const act=mails.filter(e=>acc[e]&&acc[e].activo!==false&&vence(acc[e])>Date.now()).length;
+    P('<div class="fila"><b>'+mails.length+' usuarios</b><span class="nota" style="margin:0">· '+act+' con clave vigente</span></div>'+
+      '<details style="margin-bottom:12px"><summary style="cursor:pointer;color:var(--azul);font-weight:700">Dar acceso directo a una lista de correos</summary><p class="nota">Uno por línea: <i>correo, nombre</i>. Solo @agrosuper.com. Se genera la clave y queda en «Por enviar».</p><textarea id="u-lista" placeholder="juan.perez@agrosuper.com, Juan Pérez - Rancagua"></textarea><div class="fila" style="margin-top:8px"><button id="u-add" type="button">Generar claves</button><span id="u-m"></span></div></details>'+
+      '<table><tr><th>Correo</th><th>Nombre</th><th>Clave</th><th>Dispositivos</th><th>Sesión</th><th></th></tr>'+
+      mails.map(e=>{const a=acc[e],c=cue[e]||{};const nd=(c.disps||[]).length;
+        return '<tr><td>'+esc(e)+'</td><td>'+esc((a&&a.nombre)||c.nombre||'')+'</td><td>'+estadoAcceso(a)+'</td><td>'+nd+' / '+MAX_DISP+'</td><td>'+(c.activa?'Abierta <span class="nota">'+esc(fh(c.activa.t))+'</span>':'<span class="nota">Cerrada</span>')+'</td>'+
+        '<td style="white-space:nowrap"><button class="mini" data-x="clave" data-e="'+esc(e)+'">Nueva clave</button><button class="mini sec" data-x="disp" data-e="'+esc(e)+'"'+(nd?'':' disabled')+'>Liberar disp.</button><button class="mini sec" data-x="ses" data-e="'+esc(e)+'"'+(c.activa?'':' disabled')+'>Cerrar sesión</button>'+
+        (a&&a.activo!==false?'<button class="mini peligro" data-x="off" data-e="'+esc(e)+'">Desactivar</button>':'<button class="mini sec" data-x="del" data-e="'+esc(e)+'">Eliminar</button>')+'</td></tr>';}).join('')+'</table>');
+    $('u-add').onclick=async()=>{
+      const out=[],malos=[];
+      $('u-lista').value.split(/\n/).map(x=>x.trim()).filter(Boolean).forEach(l=>{
+        const p=l.split(/[;,\t]/).map(x=>x.trim());const m=limpiaMail(p[0]);
+        if(DOM.test(m))out.push({email:m,nombre:p.slice(1).join(' ').trim(),tipo:acc[m]?'renovacion':'nueva'});else malos.push(p[0]);
       });
-      if(!out.length){$('a-m').textContent='No se encontraron correos válidos.';return;}
-      $('a-add').disabled=true;$('a-m').textContent='Guardando…';
-      try{
-        for(let i=0;i<out.length;i+=150){
-          const b=writeBatch(db);
-          out.slice(i,i+150).forEach(([m,n])=>{
-            b.set(doc(db,'autorizados',m),n?{email:m,nombre:n,activo:true,desde:serverTimestamp()}:{email:m,activo:true,desde:serverTimestamp()},{merge:true});
-            if(!ver[m]&&vencido(cod[m]))b.set(doc(db,'codigos',m),datosCodigo());
-            b.delete(doc(db,'solicitudes',m));
-          });
-          await b.commit();
-        }
-        tabAutorizados();
-      }catch(e){$('a-m').textContent='Error: '+e.message;$('a-add').disabled=false;}
+      if(!out.length){$('u-m').textContent='No hay correos @agrosuper.com válidos.';return;}
+      if(!confirm('¿Generar clave para '+out.length+' correo(s)?'+(malos.length?'\n\nSe ignoran (no son @agrosuper.com): '+malos.join(', '):'')))return;
+      $('u-add').disabled=true;$('u-m').textContent='Generando…';
+      try{await emitirClaves(out,acc,cue);pintarAdmin('enviar',out.length+' clave(s) generada(s).');}catch(e){$('u-m').textContent='Error: '+e.message;$('u-add').disabled=false;}
     };
     $('a-p').querySelectorAll('button[data-x]').forEach(b=>b.onclick=async()=>{
       const e=b.dataset.e,x=b.dataset.x;
       try{
-        if(x==='env'){abrirOutlook(e,nombreDe(e),cod[e]);await updateDoc(doc(db,'codigos',e),{enviado:serverTimestamp()});}
-        else if(x==='cop'){const m=textoCorreo(e,nombreDe(e),cod[e]);await navigator.clipboard.writeText('Para: '+e+'\nAsunto: '+m.asunto+'\n\n'+m.cuerpo);await updateDoc(doc(db,'codigos',e),{enviado:serverTimestamp()});alert('Mensaje copiado. Pégalo en un correo nuevo a '+e+'.');}
-        else if(x==='gen'){await setDoc(doc(db,'codigos',e),datosCodigo());}
-        else if(x==='del'){
-          if(!confirm('¿Quitar el acceso de '+e+'?'))return;
-          const w=writeBatch(db);['autorizados','codigos','verificados'].forEach(c=>w.delete(doc(db,c,e)));await w.commit();
-        }
+        if(x==='clave'){if(!confirm('¿Generar una clave nueva para '+e+'? La anterior deja de funcionar.'))return;await emitirClaves([{email:e,tipo:'renovacion'}],acc,cue);pintarAdmin('enviar','Clave nueva generada para '+e+'.');return;}
+        if(x==='disp'){if(!confirm('¿Liberar los dispositivos de '+e+'? Deberá volver a entrar con su clave.'))return;await updateDoc(doc(db,'cuentas',e),{disps:[],activa:null});}
+        if(x==='ses'){await updateDoc(doc(db,'cuentas',e),{activa:null});}
+        if(x==='off'){if(!confirm('¿Desactivar el acceso de '+e+'? Se cierra su sesión de inmediato.'))return;const w=writeBatch(db);w.update(doc(db,'accesos',e),{activo:false});if(cue[e])w.update(doc(db,'cuentas',e),{activa:null});await w.commit();}
+        if(x==='del'){if(!confirm('¿Eliminar a '+e+' de la lista?'))return;const w=writeBatch(db);['accesos','cuentas','porEnviar'].forEach(c=>w.delete(doc(db,c,e)));await w.commit();}
       }catch(err){alert('No se pudo completar: '+err.message);}
-      tabAutorizados();
+      tabUsuarios();
     });
   }catch(e){P('<p class="err">Error: '+esc(e.message)+'</p>');}
 }
-async function tabActividad(dias){
-  dias=dias||7;
+async function tabActividad(nd){
+  nd=nd||7;
   P('<p>Cargando actividad…</p>');
   try{
-    const desde=new Date();desde.setHours(0,0,0,0);desde.setDate(desde.getDate()-(dias-1));
-    const q=query(collection(db,'sesiones'),where('inicio','>=',Timestamp.fromDate(desde)),orderBy('inicio','desc'),limit(3000));
-    const s=await getDocs(q);const ses=[];s.forEach(d=>ses.push(d.data()));
-    const aut=[];try{(await getDocs(collection(db,'autorizados'))).forEach(d=>aut.push(d.data()));}catch(e){}
+    const desde=new Date();desde.setHours(0,0,0,0);desde.setDate(desde.getDate()-(nd-1));
+    const ts=Timestamp.fromDate(desde);
+    const [s,si,acc]=await Promise.all([
+      getDocs(query(collection(db,'sesiones'),where('inicio','>=',ts),orderBy('inicio','desc'),limit(3000))),
+      getDocs(query(collection(db,'intentos'),where('fecha','>=',ts),orderBy('fecha','desc'),limit(500))),
+      leerTodo('accesos')]);
+    const ses=[];s.forEach(d=>ses.push(d.data()));const fal=[];si.forEach(d=>fal.push(d.data()));
     const por={};
-    ses.forEach(r=>{const o=por[r.email]||(por[r.email]={email:r.email,nombre:r.nombre||'',n:0,seg:0,ult:null});o.n++;o.seg+=(r.seg||0);if(!o.ult||(r.inicio&&r.inicio.seconds>o.ult.seconds))o.ult=r.inicio;if(r.nombre)o.nombre=r.nombre;});
+    ses.forEach(r=>{const o=por[r.email]||(por[r.email]={email:r.email,nombre:r.nombre||'',n:0,seg:0,ult:null,lug:'',ds:new Set()});o.n++;o.seg+=(r.seg||0);if(r.d)o.ds.add(r.d);if(!o.ult||(r.inicio&&r.inicio.seconds>o.ult.seconds)){o.ult=r.inicio;o.lug=r.lugar||'';}if(r.nombre)o.nombre=r.nombre;});
     const res=Object.values(por).sort((a,b)=>b.seg-a.seg);
-    const sin=aut.filter(a=>!por[a.email]);
+    const sin=Object.values(acc).filter(a=>a.activo!==false&&vence(a)>Date.now()&&!por[a.email]);
     const min=sg=>Math.max(sg>0?1:0,Math.round(sg/60));
-    P('<div class="fila"><label>Período: <select id="a-d">'+[[1,'Hoy'],[7,'Últimos 7 días'],[30,'Últimos 30 días']].map(x=>'<option value="'+x[0]+'"'+(x[0]===dias?' selected':'')+'>'+x[1]+'</option>').join('')+'</select></label><button id="a-csv" class="sec" type="button">Descargar detalle (CSV)</button><span class="nota">'+res.length+' usuarios · '+ses.length+' ingresos'+(ses.length>=3000?' (tope de 3.000)':'')+'</span></div>'+
-      '<h3 style="margin:8px 0;color:var(--azul)">Resumen por usuario</h3><table><tr><th>Correo</th><th>Nombre</th><th>Ingresos</th><th>Minutos activos</th><th>Último ingreso</th></tr>'+
-      (res.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+r.n+'</td><td>'+min(r.seg)+'</td><td>'+esc(fh(r.ult))+'</td></tr>').join('')||'<tr><td colspan="5">Sin ingresos en el período.</td></tr>')+'</table>'+
-      '<h3 style="margin:18px 0 8px;color:var(--azul)">Detalle de ingresos</h3><table><tr><th>Correo</th><th>Entró</th><th>Último latido</th><th>Minutos</th><th>Dispositivo</th></tr>'+
-      ses.slice(0,300).map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(fh(r.inicio))+'</td><td>'+esc(fh(r.ultimo))+'</td><td>'+min(r.seg||0)+'</td><td>'+esc(r.disp||'')+'</td></tr>').join('')+'</table>'+(ses.length>300?'<p class="nota">Se muestran los 300 más recientes; el CSV incluye todos.</p>':'')+
-      '<h3 style="margin:18px 0 8px;color:var(--azul)">Autorizados que no han ingresado en el período ('+sin.length+')</h3><p class="nota">'+(sin.map(a=>esc(a.email)).join(' · ')||'Todos ingresaron.')+'</p>');
+    const mot={clave:'Clave incorrecta o vencida',dispositivos:'Excede 2 dispositivos'};
+    P('<div class="fila"><label>Período: <select id="a-d">'+[[1,'Hoy'],[7,'Últimos 7 días'],[30,'Últimos 30 días']].map(x=>'<option value="'+x[0]+'"'+(x[0]===nd?' selected':'')+'>'+x[1]+'</option>').join('')+'</select></label><button id="a-csv" class="sec" type="button">Descargar detalle (CSV)</button><span class="nota">'+res.length+' usuarios · '+ses.length+' ingresos'+(ses.length>=3000?' (tope de 3.000)':'')+'</span></div>'+
+      '<h3 style="margin:8px 0;color:var(--azul)">Resumen por usuario</h3><table><tr><th>Correo</th><th>Nombre</th><th>Ingresos</th><th>Minutos activos</th><th>Dispositivos</th><th>Último ingreso</th><th>Última ubicación</th></tr>'+
+      (res.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+r.n+'</td><td>'+min(r.seg)+'</td><td>'+r.ds.size+'</td><td>'+esc(fh(r.ult))+'</td><td>'+esc(r.lug)+'</td></tr>').join('')||'<tr><td colspan="7">Sin ingresos en el período.</td></tr>')+'</table>'+
+      '<h3 style="margin:18px 0 8px;color:var(--azul)">Detalle de ingresos</h3><table><tr><th>Correo</th><th>Entró</th><th>Último latido</th><th>Minutos</th><th>Dispositivo</th><th>Ubicación (aprox.)</th><th>IP · proveedor</th></tr>'+
+      ses.slice(0,300).map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(fh(r.inicio))+'</td><td>'+esc(fh(r.ultimo))+'</td><td>'+min(r.seg||0)+'</td><td>'+esc(r.disp||'')+'</td><td>'+esc(r.lugar||'—')+'</td><td class="nota">'+esc([r.ip,r.org].filter(Boolean).join(' · '))+'</td></tr>').join('')+'</table>'+(ses.length>300?'<p class="nota">Se muestran los 300 más recientes; el CSV incluye todos.</p>':'')+
+      '<h3 style="margin:18px 0 8px;color:var(--azul)">Intentos fallidos ('+fal.length+')</h3>'+(fal.length?'<table><tr><th>Correo escrito</th><th>Fecha</th><th>Motivo</th><th>Dispositivo</th><th>Ubicación · IP</th></tr>'+fal.slice(0,200).map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(fh(r.fecha))+'</td><td>'+esc(mot[r.motivo]||r.motivo)+'</td><td>'+esc(r.disp)+'</td><td class="nota">'+esc(r.lugar)+'</td></tr>').join('')+'</table>':'<p class="nota">Ninguno.</p>')+
+      '<h3 style="margin:18px 0 8px;color:var(--azul)">Con clave vigente que no han ingresado en el período ('+sin.length+')</h3><p class="nota">'+(sin.map(a=>esc(a.email)).join(' · ')||'Todos ingresaron.')+'</p>');
     $('a-d').onchange=e=>tabActividad(+e.target.value);
     $('a-csv').onclick=()=>{
-      const c=s=>'"'+String(s==null?'':s).replace(/"/g,'""')+'"';
-      const l=['correo,nombre,entro,ultimo_latido,minutos,dispositivo'].concat(ses.map(r=>[c(r.email),c(r.nombre),c(fh(r.inicio)),c(fh(r.ultimo)),min(r.seg||0),c(r.disp)].join(',')));
+      const c=x=>'"'+String(x==null?'':x).replace(/"/g,'""')+'"';
+      const l=['correo,nombre,entro,ultimo_latido,minutos,dispositivo,ubicacion,ip,proveedor'].concat(ses.map(r=>[c(r.email),c(r.nombre),c(fh(r.inicio)),c(fh(r.ultimo)),min(r.seg||0),c(r.disp),c(r.lugar),c(r.ip),c(r.org)].join(',')));
       const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+l.join('\n')],{type:'text/csv;charset=utf-8'}));a.download='actividad_plan_cecinas.csv';a.click();
     };
   }catch(e){P('<p class="err">Error: '+esc(e.message)+'</p>');}
@@ -897,7 +969,7 @@ async function tabActividad(dias){
 async function tabLlave(){
   let ex=null;try{const s=await getDoc(doc(db,'config','llave'));if(s.exists())ex=s.data();}catch(e){}
   P('<p><b>Llave de datos:</b> '+(ex?'cargada ('+esc(fh(ex.actualizada))+')':'<span class="err">aún no cargada</span>')+'</p>'+
-    '<p class="nota">Es la misma llave del secreto <code>PLAN_LLAVE</code> de GitHub. Los usuarios autorizados la reciben automáticamente al entrar; nunca viaja en el enlace. Si la cambias aquí, cámbiala también en GitHub (y viceversa), o los datos dejarán de abrirse.</p>'+
+    '<p class="nota">Es la misma llave del secreto <code>PLAN_LLAVE</code> de GitHub. Los usuarios con clave vigente la reciben automáticamente al entrar; nunca viaja en el enlace. Si la cambias aquí, cámbiala también en GitHub (y viceversa), o los datos dejarán de abrirse.</p>'+
     '<div class="fila"><input id="l-k" type="password" autocomplete="off" style="min-width:340px" placeholder="Pega aquí la llave (43 caracteres)"><button id="l-ok" type="button">Guardar llave</button><span id="l-m"></span></div>');
   $('l-ok').onclick=async()=>{
     const k=$('l-k').value.trim();
@@ -908,15 +980,12 @@ async function tabLlave(){
 }
 
 /* ---------- arranque ---------- */
-onAuthStateChanged(auth,u=>{
-  if(u){iniciar(u);return;}
-  if(sesion.latido){clearInterval(sesion.latido);sesion.latido=null;}
-  if(sesion.timer){clearInterval(sesion.timer);sesion.timer=null;}
-  if(plan_iniciado){location.reload();return;}
-  $('barra').hidden=true;$('marca').hidden=true;
-  vistaInicio();
+onAuthStateChanged(auth,async u=>{
+  if(ocupado)return;
+  if(!u){if(plan_iniciado){location.reload();return;}$('barra').hidden=true;$('marca').hidden=true;vistaLogin();return;}
+  if(!u.isAnonymous){if(u.uid===ADMIN_UID)iniciarAdmin(u);else{await signOut(auth);}return;}
+  reanudar(u);
 });
-getRedirectResult(auth).catch(e=>{console.error(e);vistaInicio(errMs(e));});
 </script>
 </body>
 </html>
