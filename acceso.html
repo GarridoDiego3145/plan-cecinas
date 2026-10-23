@@ -498,10 +498,13 @@ window.__iniciarPlan=function(){
 <div id="adm" hidden></div>
 <script type="module">
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import {getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,onAuthStateChanged,signOut} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import {getAuth,createUserWithEmailAndPassword,signInWithEmailAndPassword,onAuthStateChanged,signOut,OAuthProvider,signInWithPopup,signInWithRedirect,getRedirectResult,linkWithCredential} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import {getFirestore,doc,getDoc,setDoc,updateDoc,deleteDoc,collection,getDocs,query,orderBy,where,limit,serverTimestamp,increment,writeBatch,Timestamp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
 const CFG={apiKey:"AIzaSyDjJiRQBZ0h8y8a-SEWSZARMY2yrqqe444",authDomain:"acceso-plan-cecinas.firebaseapp.com",projectId:"acceso-plan-cecinas",storageBucket:"acceso-plan-cecinas.firebasestorage.app",messagingSenderId:"367624171571",appId:"1:367624171571:web:cd96e8c2984f8bded43346"};
+const CODIGO_URL=(function(){try{const c=new URLSearchParams(location.search).get('c');if(c){history.replaceState(null,'',location.pathname);return c.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,16);}}catch(e){}return '';})();
+const TENANT='1259e2e7-e36c-4aa5-9256-ab0a2bd682bc', MS_ACTIVO=false;
+const URL_ACCESO='https://garridodiego3145.github.io/plan-cecinas/acceso.html', DIAS_CODIGO=30;
 const ADMIN='dgarridob@agrosuper.com', ARCHIVO='data/plan.enc', CADA_MIN=5, LATIDO_SEG=60;
 const app=initializeApp(CFG), auth=getAuth(app), db=getFirestore(app);
 const $=i=>document.getElementById(i);
@@ -523,16 +526,71 @@ function errAuth(e){
   if(c==='auth/network-request-failed')return 'Sin conexión. Revisa tu internet.';
   return 'No se pudo completar. Inténtalo de nuevo.';
 }
+function proveedorMs(){
+  const p=new OAuthProvider('microsoft.com');
+  p.setCustomParameters({tenant:TENANT,prompt:'select_account'});
+  p.addScope('email');p.addScope('profile');
+  return p;
+}
+function errMs(e){
+  const c=e&&e.code;
+  if(c==='auth/popup-closed-by-user'||c==='auth/cancelled-popup-request')return 'Se cerró la ventana de Microsoft antes de terminar. Inténtalo de nuevo.';
+  if(c==='auth/operation-not-allowed')return 'El ingreso con Microsoft aún no está habilitado. Avisa al administrador.';
+  if(c==='auth/unauthorized-domain')return 'Este sitio no está autorizado para el ingreso con Microsoft. Avisa al administrador.';
+  if(c==='auth/network-request-failed')return 'Sin conexión. Revisa tu internet.';
+  const d=(e&&e.message)||'';
+  if(/AADSTS65001|consent|admin/i.test(d))return 'Microsoft pide aprobación del administrador de Agrosuper para esta aplicación. ('+esc(c||'')+')';
+  return 'No se pudo entrar con Microsoft ('+esc(c||'error')+').';
+}
+async function entrarMs(){
+  const b=$('ms-ok');if(b){b.disabled=true;b.textContent='Abriendo Microsoft…';}
+  try{await signInWithPopup(auth,proveedorMs());}
+  catch(e){
+    console.error(e);
+    if(e&&e.code==='auth/popup-blocked'){try{await signInWithRedirect(auth,proveedorMs());return;}catch(e2){console.error(e2);vistaInicio(errMs(e2));return;}}
+    if(e&&e.code==='auth/account-exists-with-different-credential'){
+      const cred=OAuthProvider.credentialFromError(e), mail=((e.customData&&e.customData.email)||'').toLowerCase();
+      if(cred&&mail){vistaVincular(mail,cred);return;}
+    }
+    vistaInicio(errMs(e));
+  }
+}
+function vistaVincular(mail,cred,msg){
+  pantalla('<h2>Vincular tu cuenta</h2><p>Ya existe una cuenta con <b>'+esc(mail)+'</b> creada con contraseña. Escríbela una sola vez para vincularla con tu cuenta Microsoft; después entrarás solo con Microsoft.</p>'+
+   '<input id="vk-pw" type="password" placeholder="Contraseña actual" autocomplete="current-password"><button id="vk-ok" type="button">Vincular y entrar</button> <button id="vk-x" class="sec" type="button">Cancelar</button>'+
+   (msg?'<p class="err" style="margin-top:10px">'+msg+'</p>':''));
+  $('vk-x').onclick=()=>vistaInicio();
+  const go=async()=>{
+    $('vk-ok').disabled=true;$('vk-ok').textContent='Vinculando…';
+    try{const r=await signInWithEmailAndPassword(auth,mail,$('vk-pw').value);await linkWithCredential(r.user,cred);}
+    catch(e){console.error(e);vistaVincular(mail,cred,errAuth(e));}
+  };
+  $('vk-ok').onclick=go;$('vk-pw').onkeydown=e=>{if(e.key==='Enter')go();};
+}
+function vistaInicio(msg){
+  if(!MS_ACTIVO){vistaLogin('entrar',msg);return;}
+  pantalla('<h2>Plan de visitas Cecinas</h2><p>Acceso restringido. Entra con tu cuenta de Agrosuper (la misma de Outlook y Teams).</p>'+
+   '<button id="ms-ok" type="button" style="display:flex;align-items:center;gap:10px;width:100%;justify-content:center;padding:11px 18px">'+
+   '<svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>'+
+   'Entrar con Microsoft (Agrosuper)</button>'+
+   (msg?'<p class="err" style="margin-top:12px">'+msg+'</p>':'')+
+   '<p style="margin-top:16px;font-size:12px"><a href="#" id="ms-pw">Entrar con correo y contraseña</a></p>');
+  $('ms-ok').onclick=entrarMs;
+  $('ms-pw').onclick=e=>{e.preventDefault();vistaLogin('entrar');};
+}
 function vistaLogin(modo,msg,mailPrev){
   modo=modo||'entrar';
   const reg=(modo==='crear');
   pantalla('<h2>Plan de visitas Cecinas</h2><p>'+(reg?'Crea tu cuenta con tu correo corporativo. Después deberás ser autorizado por el administrador.':'Acceso restringido. Entra con tu correo y contraseña.')+'</p>'+
+   (CODIGO_URL?'<p style="background:#FFF6E6;border-radius:8px;padding:8px 10px"><b>Recibiste un código de activación.</b> '+(reg?'Crea tu cuenta con el mismo correo al que te llegó.':'Entra con tu cuenta, o usa «Crear cuenta» si es la primera vez, con el mismo correo al que te llegó.')+'</p>':'')+
    '<input id="lg-mail" type="email" placeholder="nombre@agrosuper.com" autocomplete="username" value="'+esc(mailPrev||LS.get('pc_email')||'')+'">'+
    '<input id="lg-pw" type="password" placeholder="Contraseña'+(reg?' (mínimo 8 caracteres)':'')+'" autocomplete="'+(reg?'new-password':'current-password')+'">'+
    (reg?'<input id="lg-pw2" type="password" placeholder="Repite la contraseña" autocomplete="new-password">':'')+
    '<button id="lg-ok" type="button">'+(reg?'Crear cuenta':'Entrar')+'</button> <button id="lg-alt" class="sec" type="button">'+(reg?'Ya tengo cuenta':'Crear cuenta')+'</button>'+
    (msg?'<p class="err" style="margin-top:12px">'+msg+'</p>':'')+
-   (reg?'':'<p style="margin-top:12px;font-size:12px">¿Olvidaste tu contraseña? Pide al administrador que la restablezca.</p>'));
+   (reg?'':'<p style="margin-top:12px;font-size:12px">¿Olvidaste tu contraseña? Pide al administrador que la restablezca.</p>')+
+   (MS_ACTIVO?'<p style="margin-top:8px;font-size:12px"><a href="#" id="lg-ms">← Entrar con Microsoft</a></p>':''));
+  if($('lg-ms'))$('lg-ms').onclick=e=>{e.preventDefault();vistaInicio();};
   const go=async()=>{
     const m=$('lg-mail').value.trim().toLowerCase(), pw=$('lg-pw').value;
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m)){vistaLogin(modo,'Escribe un correo válido.',m);return;}
@@ -548,10 +606,26 @@ function vistaLogin(modo,msg,mailPrev){
   $('lg-alt').onclick=()=>vistaLogin(reg?'entrar':'crear','',$('lg-mail').value.trim().toLowerCase());
   ['lg-mail','lg-pw','lg-pw2'].forEach(id=>{const el=$(id);if(el)el.onkeydown=e=>{if(e.key==='Enter')go();};});
 }
+function vistaCodigo(email,u,msg){
+  pantalla('<h2>Activa tu acceso</h2><p>Tu correo <b>'+esc(email)+'</b> ya está autorizado. Para activarlo, escribe el <b>código de activación</b> que te llegó por correo desde <b>'+esc(ADMIN)+'</b> (o abre el enlace de ese correo).</p>'+
+   '<input id="vf-cod" type="text" maxlength="16" autocomplete="one-time-code" placeholder="Código de activación" value="'+esc(CODIGO_URL)+'" style="text-transform:uppercase;letter-spacing:2px">'+
+   '<button id="vf-ok" type="button">Activar</button> <button id="vf-s" class="sec" type="button">Salir</button>'+
+   (msg?'<p class="err" style="margin-top:10px">'+msg+'</p>':'<p style="margin-top:12px;font-size:12px">¿No te ha llegado? Revisa también Correo no deseado o pídelo al administrador.</p>'));
+  $('vf-s').onclick=()=>signOut(auth);
+  const go=async()=>{
+    const c=$('vf-cod').value.trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+    if(c.length<8){vistaCodigo(email,u,'Escribe el código completo.');return;}
+    $('vf-ok').disabled=true;$('vf-ok').textContent='Activando…';
+    try{await setDoc(doc(db,'verificados',email),{email,uid:u.uid,t:c,fecha:serverTimestamp()});iniciar(u);}
+    catch(e){console.error(e);vistaCodigo(email,u,'Código incorrecto o vencido. Pide uno nuevo al administrador.');}
+  };
+  $('vf-ok').onclick=go;$('vf-cod').onkeydown=e=>{if(e.key==='Enter')go();};
+  if(CODIGO_URL&&!msg&&!vistaCodigo.auto){vistaCodigo.auto=true;go();}
+}
 async function vistaSolicitud(email){
   let sol=null;try{const s=await getDoc(doc(db,'solicitudes',email));if(s.exists())sol=s.data();}catch(e){}
   if(sol){
-    pantalla('<h2>Solicitud enviada</h2><p>Tu correo <b>'+esc(email)+'</b> está pendiente de autorización ('+esc(fh(sol.fecha))+'). Cuando sea aprobada podrás entrar con este mismo correo.</p><button id="so-r" type="button">Revisar de nuevo</button> <button id="so-s" class="sec" type="button">Salir</button>');
+    pantalla('<h2>Solicitud enviada</h2><p>Tu correo <b>'+esc(email)+'</b> está pendiente de autorización ('+esc(fh(sol.fecha))+'). Cuando sea aprobada te llegará un correo con tu código de activación.</p><button id="so-r" type="button">Revisar de nuevo</button> <button id="so-s" class="sec" type="button">Salir</button>');
     $('so-r').onclick=()=>iniciar(sesion.u);$('so-s').onclick=()=>signOut(auth);
     return;
   }
@@ -630,12 +704,16 @@ function barra(){
 let plan_iniciado=false;
 async function iniciar(u){
   sesion.u=u;sesion.email=(u.email||'').toLowerCase();sesion.esAdmin=(sesion.email===ADMIN);
+  if(!sesion.email){pantalla('<h2>Cuenta sin correo</h2><p>Tu cuenta Microsoft no entregó un correo. Avisa al administrador.</p><button id="nc-s" class="sec" type="button">Salir</button>');$('nc-s').onclick=()=>signOut(auth);return;}
   vistaCargando('Validando acceso…');
   if(sesion.esAdmin){sesion.perfil={nombre:'Administrador'};}
   else{
     let p=null;
     try{const s=await getDoc(doc(db,'autorizados',sesion.email));if(s.exists()&&s.data().activo!==false)p=s.data();}catch(e){console.error(e);}
     if(!p){await vistaSolicitud(sesion.email);return;}
+    let ver=false;
+    try{const v=await getDoc(doc(db,'verificados',sesion.email));ver=v.exists()&&v.data().uid===u.uid;}catch(e){console.error(e);}
+    if(!ver){vistaCodigo(sesion.email,u);return;}
     sesion.perfil=p;
   }
   try{
@@ -677,30 +755,79 @@ function pintarAdmin(tab){
   ({solicitudes:tabSolicitudes,autorizados:tabAutorizados,actividad:tabActividad,llave:tabLlave})[tab]();
 }
 const P=h=>{$('a-p').innerHTML=h;};
+/* códigos de activación (los envía el administrador desde su Outlook) */
+function nuevoCodigo(){const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',r=crypto.getRandomValues(new Uint8Array(10));return Array.from(r,x=>A[x&31]).join('');}
+function datosCodigo(){return {t:nuevoCodigo(),creado:serverTimestamp(),exp:Timestamp.fromMillis(Date.now()+DIAS_CODIGO*864e5),enviado:null};}
+const vencido=c=>!c||!c.exp||!c.exp.toMillis||c.exp.toMillis()<Date.now();
+function textoCorreo(email,nombre,c){
+  const n=String(nombre||'').split(/\s[-–]\s|,/)[0].trim();
+  const fs=c.exp.toDate().toLocaleDateString('es-CL',{timeZone:'America/Santiago',day:'2-digit',month:'2-digit',year:'numeric'});
+  return {asunto:'Tu acceso al Plan de visitas Cecinas',
+    cuerpo:'Hola'+(n?' '+n:'')+',\n\nYa tienes acceso al Plan de visitas Cecinas. Para activarlo:\n\n1. Abre este enlace: '+URL_ACCESO+'?c='+c.t+
+      '\n2. Entra con tu correo '+email+' (si es tu primera vez, usa «Crear cuenta» con este mismo correo).\n3. Si te lo pide, escribe tu código de activación: '+c.t+
+      '\n\nEl código es personal, vence el '+fs+' y no debes compartirlo.\n\nSaludos,\nDiego'};
+}
+function abrirOutlook(email,nombre,c){
+  const m=textoCorreo(email,nombre,c);
+  window.open('https://outlook.office.com/mail/deeplink/compose?to='+encodeURIComponent(email)+'&subject='+encodeURIComponent(m.asunto)+'&body='+encodeURIComponent(m.cuerpo),'_blank','noopener');
+}
 async function tabSolicitudes(){
   try{
     const s=await getDocs(collection(db,'solicitudes'));
     const f=[];s.forEach(d=>f.push(d.data()));f.sort((a,b)=>(a.fecha&&b.fecha?a.fecha.seconds-b.fecha.seconds:0));
     if(!f.length){P('<p>No hay solicitudes pendientes.</p>');return;}
-    P('<table><tr><th>Correo</th><th>Nombre / cargo</th><th>Solicitada</th><th></th></tr>'+f.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+esc(fh(r.fecha))+'</td><td><button class="mini" data-a="ok" data-e="'+esc(r.email)+'" data-n="'+esc(r.nombre)+'">Autorizar</button><button class="mini sec" data-a="no" data-e="'+esc(r.email)+'">Rechazar</button></td></tr>').join('')+'</table>');
+    P('<p class="nota">Al autorizar se genera un código de activación. Luego envíalo desde la pestaña <b>Autorizados</b> con «Enviar por Outlook».</p><table><tr><th>Correo</th><th>Nombre / cargo</th><th>Solicitada</th><th></th></tr>'+f.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+esc(fh(r.fecha))+'</td><td><button class="mini" data-a="ok" data-e="'+esc(r.email)+'" data-n="'+esc(r.nombre)+'">Autorizar</button><button class="mini sec" data-a="no" data-e="'+esc(r.email)+'">Rechazar</button></td></tr>').join('')+'</table>');
     $('a-p').querySelectorAll('button[data-a]').forEach(b=>b.onclick=async()=>{
       b.disabled=true;
+      const e=b.dataset.e, ok=b.dataset.a==='ok';
       try{
-        if(b.dataset.a==='ok')await setDoc(doc(db,'autorizados',b.dataset.e),{email:b.dataset.e,nombre:b.dataset.n,activo:true,desde:serverTimestamp()});
-        await deleteDoc(doc(db,'solicitudes',b.dataset.e));
-      }catch(e){alert('No se pudo completar: '+e.message);}
-      tabSolicitudes();
+        const w=writeBatch(db);
+        if(ok){
+          w.set(doc(db,'autorizados',e),{email:e,nombre:b.dataset.n,activo:true,desde:serverTimestamp()});
+          const v=await getDoc(doc(db,'verificados',e));
+          if(!v.exists())w.set(doc(db,'codigos',e),datosCodigo());
+        }
+        w.delete(doc(db,'solicitudes',e));
+        await w.commit();
+      }catch(x){alert('No se pudo completar: '+x.message);}
+      if(ok)pintarAdmin('autorizados');else tabSolicitudes();
     });
   }catch(e){P('<p class="err">Error: '+esc(e.message)+'</p>');}
 }
 async function tabAutorizados(){
   try{
-    const s=await getDocs(collection(db,'autorizados'));
-    const f=[];s.forEach(d=>f.push(d.data()));f.sort((a,b)=>a.email.localeCompare(b.email));
-    P('<div class="fila"><b>'+f.length+' correos autorizados</b></div>'+
+    const [sa,sc,sv]=await Promise.all([getDocs(collection(db,'autorizados')),getDocs(collection(db,'codigos')),getDocs(collection(db,'verificados'))]);
+    const f=[],cod={},ver={};sa.forEach(d=>f.push(d.data()));sc.forEach(d=>cod[d.id]=d.data());sv.forEach(d=>ver[d.id]=d.data());
+    f.sort((a,b)=>a.email.localeCompare(b.email));
+    const porEnviar=f.filter(r=>!ver[r.email]&&cod[r.email]&&!vencido(cod[r.email])&&!cod[r.email].enviado);
+    const activos=f.filter(r=>ver[r.email]).length;
+    const estado=r=>{
+      const v=ver[r.email],c=cod[r.email];
+      if(v)return '<span style="color:#1b7f3b;font-weight:700">Activado</span> <span class="nota">'+esc(fh(v.fecha))+'</span>';
+      if(!c)return '<span class="nota">Sin código</span>';
+      if(vencido(c))return '<span class="err">Código vencido</span>';
+      if(c.enviado)return 'Código enviado <span class="nota">'+esc(fh(c.enviado))+'</span>';
+      return '<b style="color:var(--naranja)">Por enviar</b>';
+    };
+    const acciones=r=>{
+      const c=cod[r.email];let h='';
+      if(!ver[r.email]){
+        if(c&&!vencido(c))h+='<button class="mini" data-x="env" data-e="'+esc(r.email)+'">'+(c.enviado?'Reenviar':'Enviar por Outlook')+'</button><button class="mini sec" data-x="cop" data-e="'+esc(r.email)+'">Copiar</button>';
+        else h+='<button class="mini" data-x="gen" data-e="'+esc(r.email)+'">Generar código</button>';
+      }
+      return h+'<button class="mini peligro" data-x="del" data-e="'+esc(r.email)+'">Quitar</button>';
+    };
+    P('<div class="fila"><b>'+f.length+' correos autorizados</b><span class="nota" style="margin:0">· '+activos+' activados · '+porEnviar.length+' códigos por enviar</span>'+(porEnviar.length?'<button id="a-csv" class="mini sec" type="button">Descargar códigos por enviar (CSV)</button>':'')+'</div>'+
+      '<p class="nota">Cada persona necesita su código de activación, que tú le envías desde tu Outlook. «Enviar por Outlook» abre el correo ya redactado en una pestaña nueva; solo debes presionar Enviar.</p>'+
       '<p class="nota">Agregar correos: uno por línea o separados por coma / punto y coma. Opcional: <i>correo, nombre</i> en cada línea.</p>'+
       '<textarea id="a-lista" placeholder="juan.perez@agrosuper.com, Juan Pérez - Rancagua"></textarea><div class="fila" style="margin-top:8px"><button id="a-add" type="button">Autorizar estos correos</button><span id="a-m"></span></div><hr style="border:0;border-top:1px solid var(--linea);margin:14px 0">'+
-      '<table><tr><th>Correo</th><th>Nombre</th><th>Desde</th><th></th></tr>'+f.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+esc(fh(r.desde))+'</td><td><button class="mini peligro" data-e="'+esc(r.email)+'">Quitar acceso</button></td></tr>').join('')+'</table>');
+      '<table><tr><th>Correo</th><th>Nombre</th><th>Desde</th><th>Estado</th><th></th></tr>'+f.map(r=>'<tr><td>'+esc(r.email)+'</td><td>'+esc(r.nombre)+'</td><td>'+esc(fh(r.desde))+'</td><td>'+estado(r)+'</td><td style="white-space:nowrap">'+acciones(r)+'</td></tr>').join('')+'</table>');
+    const nombreDe=e=>(f.find(r=>r.email===e)||{}).nombre||'';
+    if($('a-csv'))$('a-csv').onclick=()=>{
+      const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+      const filas=[['correo','nombre','codigo','enlace','vence']].concat(porEnviar.map(r=>{const c=cod[r.email];return [r.email,r.nombre,c.t,URL_ACCESO+'?c='+c.t,c.exp.toDate().toLocaleDateString('es-CL')];}));
+      const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+filas.map(x=>x.map(q).join(';')).join('\r\n')],{type:'text/csv'}));a.download='codigos_por_enviar.csv';a.click();
+    };
     $('a-add').onclick=async()=>{
       const filas=$('a-lista').value.split(/\n/).map(x=>x.trim()).filter(Boolean);
       const out=[];
@@ -713,19 +840,29 @@ async function tabAutorizados(){
       if(!out.length){$('a-m').textContent='No se encontraron correos válidos.';return;}
       $('a-add').disabled=true;$('a-m').textContent='Guardando…';
       try{
-        for(let i=0;i<out.length;i+=400){
+        for(let i=0;i<out.length;i+=150){
           const b=writeBatch(db);
-          out.slice(i,i+400).forEach(([m,n])=>b.set(doc(db,'autorizados',m),{email:m,nombre:n,activo:true,desde:serverTimestamp()},{merge:true}));
+          out.slice(i,i+150).forEach(([m,n])=>{
+            b.set(doc(db,'autorizados',m),n?{email:m,nombre:n,activo:true,desde:serverTimestamp()}:{email:m,activo:true,desde:serverTimestamp()},{merge:true});
+            if(!ver[m]&&vencido(cod[m]))b.set(doc(db,'codigos',m),datosCodigo());
+            b.delete(doc(db,'solicitudes',m));
+          });
           await b.commit();
         }
-        // las solicitudes pendientes de esos correos se limpian
-        for(const [m] of out){try{await deleteDoc(doc(db,'solicitudes',m));}catch(e){}}
         tabAutorizados();
       }catch(e){$('a-m').textContent='Error: '+e.message;$('a-add').disabled=false;}
     };
-    $('a-p').querySelectorAll('button[data-e]').forEach(b=>b.onclick=async()=>{
-      if(!confirm('¿Quitar el acceso de '+b.dataset.e+'?'))return;
-      try{await deleteDoc(doc(db,'autorizados',b.dataset.e));}catch(e){alert(e.message);}
+    $('a-p').querySelectorAll('button[data-x]').forEach(b=>b.onclick=async()=>{
+      const e=b.dataset.e,x=b.dataset.x;
+      try{
+        if(x==='env'){abrirOutlook(e,nombreDe(e),cod[e]);await updateDoc(doc(db,'codigos',e),{enviado:serverTimestamp()});}
+        else if(x==='cop'){const m=textoCorreo(e,nombreDe(e),cod[e]);await navigator.clipboard.writeText('Para: '+e+'\nAsunto: '+m.asunto+'\n\n'+m.cuerpo);await updateDoc(doc(db,'codigos',e),{enviado:serverTimestamp()});alert('Mensaje copiado. Pégalo en un correo nuevo a '+e+'.');}
+        else if(x==='gen'){await setDoc(doc(db,'codigos',e),datosCodigo());}
+        else if(x==='del'){
+          if(!confirm('¿Quitar el acceso de '+e+'?'))return;
+          const w=writeBatch(db);['autorizados','codigos','verificados'].forEach(c=>w.delete(doc(db,c,e)));await w.commit();
+        }
+      }catch(err){alert('No se pudo completar: '+err.message);}
       tabAutorizados();
     });
   }catch(e){P('<p class="err">Error: '+esc(e.message)+'</p>');}
@@ -777,8 +914,9 @@ onAuthStateChanged(auth,u=>{
   if(sesion.timer){clearInterval(sesion.timer);sesion.timer=null;}
   if(plan_iniciado){location.reload();return;}
   $('barra').hidden=true;$('marca').hidden=true;
-  vistaLogin();
+  vistaInicio();
 });
+getRedirectResult(auth).catch(e=>{console.error(e);vistaInicio(errMs(e));});
 </script>
 </body>
 </html>
